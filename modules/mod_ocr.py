@@ -11,13 +11,7 @@ import fitz
 
 from core.pdf_viewer import PDFGraphicsView
 from core.ui_components import FileListManagerWidget
-from core.utils import detect_smart_segments, UniversalSegmentDialog
-
-BTN_BLUE = "background-color: #3498DB; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
-BTN_GREEN = "background-color: #2ECC71; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
-BTN_PURPLE = "background-color: #9B59B6; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
-BTN_GRAY = "background-color: #ECF0F1; color: #2C3E50; font-weight: bold; padding: 6px; border-radius: 4px; border: 1px solid #BDC3C7;"
-
+from core.utils import detect_smart_segments, UniversalSegmentDialog, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_GRAY
 
 class OCRWorker(QThread):
     progress = pyqtSignal(int, str)

@@ -3,6 +3,7 @@
 ![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)
 ![PyQt5](https://img.shields.io/badge/PyQt5-GUI-brightgreen.svg)
 ![PaddleOCR](https://img.shields.io/badge/PaddleOCR-Offline-orange.svg)
+![OpenCV](https://img.shields.io/badge/OpenCV-Image%20Processing-red.svg)
 ![License](https://img.shields.io/badge/License-GPL%203.0-lightgrey.svg)
 
 > **一款全能型、纯本地化运行的 PDF 智能处理工具箱，专为工程图纸与大批量文档的高效排版设计。**
@@ -58,6 +59,11 @@
 * **PDF 转纯图片型 PDF：** 专治字体缺失、乱码的顽固 PDF，将其底层栅格化重组为绝对兼容的只读 PDF。
 * PDF 批量导出为高清 JPG/PNG（支持 PNG 透明通道）。
 
+### 📐 模块 6 (全新)：线稿图片转 DXF 引擎
+专为设计师与工程师打造，基于 OpenCV 高级边缘检测与多边形拟合算法，将手绘线稿、图纸扫描件极速矢量化为 CAD 标准的 `.dxf` 格式。
+* **毫秒级商业预览体验：** 告别盲目瞎转。提供可视化的渲染视窗，拖动滑块即可实时（零延迟）预览红色 CAD 线条的提取结果。
+* **智能去噪与平滑降维：** 独家提供“节点平滑度”算法滑块。可在保留图纸特征的前提下，大幅减少 DXF 文件体积并消除锯齿。
+* **极简模式：** 智能应对“白底黑线”与“黑底白线”图纸，纯本地批处理生成，断网可用。
 ---
 
 ## 💻 技术栈
@@ -65,9 +71,9 @@
 * **GUI 框架:** `PyQt5`
 * **PDF 核心处理:** `PyMuPDF` (fitz), `PyPDF2`, `pypdfium2`
 * **OCR 引擎:** `paddlepaddle`, `paddleocr`
+* **图形图像与矢量化:** `opencv-python`, `ezdxf`, `Pillow`
 * **底层压缩渲染:** `Ghostscript` (已内置便携版)
-* **数据处理:** `pandas`, `openpyxl`
-* **图像处理:** `opencv-python`, `Pillow`
+* **防伪与数字签名:** `pyhanko`, `cryptography`
 
 ---
 

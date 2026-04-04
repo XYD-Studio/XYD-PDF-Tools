@@ -7,8 +7,9 @@ from PyQt5.QtWidgets import (QGraphicsView, QGraphicsScene, QGraphicsRectItem,
 from PyQt5.QtCore import Qt, pyqtSignal, QRectF
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QWheelEvent, QPen, QColor, QFont
 import fitz
+from core.utils import MM_TO_PTS
 
-MM_TO_PTS = 72 / 25.4
+
 RENDER_SCALE = 2.0
 
 

@@ -1,20 +1,15 @@
 import os
 import copy
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-                             QGroupBox, QMessageBox, QFileDialog, QProgressBar, QSplitter)
+                             QGroupBox, QMessageBox, QFileDialog, QProgressBar, QSplitter, QLineEdit)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRectF
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QWheelEvent, QCursor
 from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene
 import fitz
 
 from core.ui_components import FileListManagerWidget
-from core.utils import detect_smart_segments, UniversalSegmentDialog
+from core.utils import detect_smart_segments, UniversalSegmentDialog, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_GRAY, BTN_RED
 
-BTN_BLUE = "background-color: #3498DB; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
-BTN_GREEN = "background-color: #2ECC71; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
-BTN_PURPLE = "background-color: #9B59B6; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
-BTN_GRAY = "background-color: #ECF0F1; color: #2C3E50; font-weight: bold; padding: 6px; border-radius: 4px; border: 1px solid #BDC3C7;"
-BTN_RED = "background-color: #E74C3C; color: white; font-weight: bold; padding: 10px; border-radius: 4px;"
 
 
 # ================= 自定义裁剪专用视图引擎 =================
@@ -207,6 +202,144 @@ class CropperGraphicsView(QGraphicsView):
             self.viewport().update()
 
 
+# ================= 新增：带导航与自动缩放的裁剪专属代理视图 =================
+class CropperPreviewWidget(QWidget):
+    """裁剪功能专用的带底部导航栏和自动适应大小的视图套壳"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+
+        # 核心交互绘图区
+        self.view = CropperGraphicsView()
+        self.layout.addWidget(self.view, 1)
+
+        # 底部导航栏
+        self.nav_layout = QHBoxLayout()
+
+        self.btn_zoom_out = QPushButton("➖ 缩小")
+        self.btn_zoom_fit = QPushButton("🔲 适应窗口")
+        self.btn_zoom_in = QPushButton("➕ 放大")
+
+        self.btn_prev = QPushButton("◀ 上一页")
+        self.btn_next = QPushButton("下一页 ▶")
+
+        self.entry_page = QLineEdit()
+        self.entry_page.setFixedWidth(60)
+        self.entry_page.setAlignment(Qt.AlignCenter)
+
+        self.lbl_total = QLabel("/ 0 页")
+
+        # 导航栏统一美化
+        nav_btn_style = "padding: 5px 15px; font-weight: bold; background-color: #3498DB; color: white; border-radius: 4px;"
+        zoom_btn_style = "padding: 5px 12px; font-weight: bold; background-color: #95A5A6; color: white; border-radius: 4px;"
+
+        self.btn_prev.setStyleSheet(nav_btn_style)
+        self.btn_next.setStyleSheet(nav_btn_style)
+        self.btn_zoom_out.setStyleSheet(zoom_btn_style)
+        self.btn_zoom_fit.setStyleSheet(zoom_btn_style)
+        self.btn_zoom_in.setStyleSheet(zoom_btn_style)
+        self.entry_page.setStyleSheet("padding: 5px; border: 1px solid #BDC3C7; border-radius: 3px; font-weight: bold;")
+        self.lbl_total.setStyleSheet("font-weight: bold; color: #2C3E50;")
+
+        self.nav_layout.addWidget(self.btn_zoom_out)
+        self.nav_layout.addWidget(self.btn_zoom_fit)
+        self.nav_layout.addWidget(self.btn_zoom_in)
+        self.nav_layout.addStretch(1)
+        self.nav_layout.addWidget(self.btn_prev)
+        self.nav_layout.addWidget(QLabel("当前第"))
+        self.nav_layout.addWidget(self.entry_page)
+        self.nav_layout.addWidget(self.lbl_total)
+        self.nav_layout.addWidget(self.btn_next)
+        self.nav_layout.addStretch(1)
+
+        self.layout.addLayout(self.nav_layout)
+
+        # 绑定事件
+        self.btn_prev.clicked.connect(self._go_prev)
+        self.btn_next.clicked.connect(self._go_next)
+        self.entry_page.returnPressed.connect(self._jump_page)
+        self.view.pageChanged.connect(self._on_page_changed)
+
+        self.btn_zoom_in.clicked.connect(self._zoom_in)
+        self.btn_zoom_out.clicked.connect(self._zoom_out)
+        self.btn_zoom_fit.clicked.connect(self._zoom_fit)
+
+    # --- 对外暴露代理属性与方法 (使外部调用无感知) ---
+    @property
+    def page_data_dict(self):
+        return self.view.page_data_dict
+
+    @property
+    def current_page(self):
+        return self.view.current_page
+
+    def add_v_line(self):
+        self.view.add_v_line()
+
+    def add_h_line(self):
+        self.view.add_h_line()
+
+    def reset_lines(self):
+        self.view.reset_lines()
+
+    def load_pdf(self, doc, target_page=0, data_dict=None):
+        """核心加载入口：每次重新加载 PDF 或进入微调，自动触发适应窗口"""
+        self.view.load_pdf(doc, target_page, data_dict)
+        self._zoom_fit()
+
+    # --- 导航与缩放逻辑 ---
+    def _go_prev(self):
+        if self.view.pdf_doc and self.view.current_page > 0:
+            self.view.show_page(self.view.current_page - 1)
+
+    def _go_next(self):
+        if self.view.pdf_doc and self.view.current_page < len(self.view.pdf_doc) - 1:
+            self.view.show_page(self.view.current_page + 1)
+
+    def _jump_page(self):
+        if not self.view.pdf_doc: return
+        try:
+            p = int(self.entry_page.text()) - 1
+            if 0 <= p < len(self.view.pdf_doc):
+                self.view.show_page(p)
+            else:
+                self.entry_page.setText(str(self.view.current_page + 1))
+        except ValueError:
+            self.entry_page.setText(str(self.view.current_page + 1))
+
+    def _on_page_changed(self, page_idx):
+        self.entry_page.setText(str(page_idx + 1))
+        if self.view.pdf_doc:
+            self.lbl_total.setText(f"/ 共 {len(self.view.pdf_doc)} 页")
+        else:
+            self.lbl_total.setText("/ 0 页")
+
+    def _zoom_in(self):
+        if not self.view.page_item: return
+        self.view.zoom_factor *= 1.15
+        self.view.scale(1.15, 1.15)
+
+    def _zoom_out(self):
+        if not self.view.page_item: return
+        self.view.zoom_factor /= 1.15
+        self.view.scale(1 / 1.15, 1 / 1.15)
+
+    def _zoom_fit(self):
+        if not self.view.page_item: return
+        rect = self.view.page_item.boundingRect()
+        view_rect = self.view.viewport().rect()
+        if rect.width() == 0 or rect.height() == 0: return
+
+        # 计算最佳缩放比例，预留 5% 边距，确保整页完全显示
+        ratio = min(view_rect.width() / rect.width(), view_rect.height() / rect.height()) * 0.95
+
+        # 重置并应用新比例
+        self.view.resetTransform()
+        self.view.zoom_factor = ratio
+        self.view.scale(ratio, ratio)
+        self.view.centerOn(self.view.page_item)
 # ================= 裁剪执行后台线程 =================
 class CropWorker(QThread):
     progress = pyqtSignal(int, str)
@@ -359,7 +492,8 @@ class CropperWidget(QWidget):
         self.btn_confirm_pos.hide()
         self.btn_confirm_pos.clicked.connect(self.confirm_crop_position)
 
-        self.preview_view = CropperGraphicsView()
+        self.preview_view = CropperPreviewWidget()
+
         bottom_layout.addWidget(self.btn_confirm_pos)
         bottom_layout.addWidget(self.preview_view)
 

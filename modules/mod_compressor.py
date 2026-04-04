@@ -9,36 +9,9 @@ from PyQt5.QtCore import QThread, pyqtSignal
 import fitz
 
 from core.ui_components import FileListManagerWidget
+from core.utils import find_ghostscript, run_ghostscript
 
 
-def get_base_path():
-    import sys
-    if getattr(sys, 'frozen', False):
-        return sys._MEIPASS
-    return os.path.abspath(".")
-
-
-def find_ghostscript():
-    base_path = get_base_path()
-    bundled_gs = os.path.join(base_path, "gs_portable", "bin", "gswin64c.exe")
-    bundled_lib = os.path.join(base_path, "gs_portable", "lib")
-
-    if os.path.exists(bundled_gs) and os.path.exists(bundled_lib):
-        return bundled_gs, bundled_lib
-
-    possible_paths = [r"C:\Program Files\gs\gs10.04.0\bin\gswin64c.exe",
-                      r"D:\Program Files\gs\gs10.04.0\bin\gswin64c.exe"]
-    if shutil.which("gswin64c"): return "gswin64c", None
-    for p in possible_paths:
-        if os.path.exists(p): return p, None
-
-    base_dir = r"C:\Program Files\gs"
-    if os.path.exists(base_dir):
-        for item in os.listdir(base_dir):
-            bin_path = os.path.join(base_dir, item, "bin", "gswin64c.exe")
-            if os.path.exists(bin_path): return bin_path, None
-
-    return None, None
 
 
 # ================= 专属后台处理线程 =================
@@ -75,14 +48,16 @@ class PDFCompressWorker(QThread):
                     doc.close()
 
                     self.progress.emit(50, "正在启动引擎进行深度强力压缩...")
-                    cmd = [self.gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
-                           f"-dPDFSETTINGS={self.quality}",
-                           "-dNOPAUSE", "-dQUIET", "-dBATCH"]
-                    if self.gs_lib_path: cmd.insert(1, f"-I{self.gs_lib_path}")
-                    cmd.append(f"-sOutputFile={self.output_path}")
-                    cmd.append(temp_merged)
-
-                    subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+                    # cmd = [self.gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
+                    #        f"-dPDFSETTINGS={self.quality}",
+                    #        "-dNOPAUSE", "-dQUIET", "-dBATCH"]
+                    # if self.gs_lib_path: cmd.insert(1, f"-I{self.gs_lib_path}")
+                    # cmd.append(f"-sOutputFile={self.output_path}")
+                    # cmd.append(temp_merged)
+                    #
+                    # subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+                    run_ghostscript(self.gs_path, self.gs_lib_path, temp_merged, self.output_path,
+                                    quality=self.quality)
                 finally:
                     shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -97,14 +72,16 @@ class PDFCompressWorker(QThread):
                     final_name = f"{self.prefix}{base_name}{self.suffix}.pdf"
                     out_path = os.path.join(self.output_path, final_name)
 
-                    cmd = [self.gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
-                           f"-dPDFSETTINGS={self.quality}",
-                           "-dNOPAUSE", "-dQUIET", "-dBATCH"]
-                    if self.gs_lib_path: cmd.insert(1, f"-I{self.gs_lib_path}")
-                    cmd.append(f"-sOutputFile={out_path}")
-                    cmd.append(input_path)
-
-                    subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+                    # cmd = [self.gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
+                    #        f"-dPDFSETTINGS={self.quality}",
+                    #        "-dNOPAUSE", "-dQUIET", "-dBATCH"]
+                    # if self.gs_lib_path: cmd.insert(1, f"-I{self.gs_lib_path}")
+                    # cmd.append(f"-sOutputFile={out_path}")
+                    # cmd.append(input_path)
+                    #
+                    # subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+                    run_ghostscript(self.gs_path, self.gs_lib_path, input_path, out_path,
+                                    quality=self.quality)
                 self.progress.emit(100, "批量压缩完成！")
 
             # === 模式 3：压缩并拆分为单页 ===
@@ -118,13 +95,15 @@ class PDFCompressWorker(QThread):
 
                         # 1. 先把原文件压缩输出到临时文件
                         temp_pdf = os.path.join(temp_dir, f"temp_{i}.pdf")
-                        cmd = [self.gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
-                               f"-dPDFSETTINGS={self.quality}",
-                               "-dNOPAUSE", "-dQUIET", "-dBATCH"]
-                        if self.gs_lib_path: cmd.insert(1, f"-I{self.gs_lib_path}")
-                        cmd.append(f"-sOutputFile={temp_pdf}")
-                        cmd.append(input_path)
-                        subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+                        # cmd = [self.gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
+                        #        f"-dPDFSETTINGS={self.quality}",
+                        #        "-dNOPAUSE", "-dQUIET", "-dBATCH"]
+                        # if self.gs_lib_path: cmd.insert(1, f"-I{self.gs_lib_path}")
+                        # cmd.append(f"-sOutputFile={temp_pdf}")
+                        # cmd.append(input_path)
+                        # subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+                        run_ghostscript(self.gs_path, self.gs_lib_path, input_path, temp_pdf,
+                                        quality=self.quality)
 
                         # 2. 用 fitz 把压缩好的 PDF 拆成单页
                         doc = fitz.open(temp_pdf)

@@ -1,7 +1,76 @@
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem,
                              QPushButton, QHBoxLayout, QHeaderView, QMessageBox, QInputDialog)
+import os
+import sys
+import shutil
+import subprocess
 
+# ================= 公共物理换算常量 =================
 MM_TO_PTS = 72 / 25.4
+
+# ================= 公共 UI 样式常量 =================
+BTN_BLUE = "background-color: #3498DB; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
+BTN_GREEN = "background-color: #2ECC71; color: white; font-weight: bold; padding: 10px; border-radius: 4px;"
+BTN_PURPLE = "background-color: #9B59B6; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
+BTN_RED = "background-color: #E74C3C; color: white; font-weight: bold; padding: 10px; border-radius: 4px;"
+BTN_GRAY = "background-color: #ECF0F1; color: #2C3E50; font-weight: bold; padding: 6px; border-radius: 4px; border: 1px solid #BDC3C7;"
+BTN_ORANGE = "background-color: #E67E22; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
+
+
+# ================= 系统与环境工具 =================
+def get_base_path(relative_path=""):
+    """获取程序运行的基础路径（兼容打包后环境与直接运行）"""
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
+def find_ghostscript():
+    """全局统一寻找 Ghostscript 引擎"""
+    base_path = get_base_path()
+    bundled_gs = os.path.join(base_path, "gs_portable", "bin", "gswin64c.exe")
+    bundled_lib = os.path.join(base_path, "gs_portable", "lib")
+
+    if os.path.exists(bundled_gs) and os.path.exists(bundled_lib):
+        return bundled_gs, bundled_lib
+
+    possible_paths = [r"C:\Program Files\gs\gs10.04.0\bin\gswin64c.exe",
+                      r"D:\Program Files\gs\gs10.04.0\bin\gswin64c.exe"]
+    if shutil.which("gswin64c"): return "gswin64c", None
+    for p in possible_paths:
+        if os.path.exists(p): return p, None
+
+    base_dir = r"C:\Program Files\gs"
+    if os.path.exists(base_dir):
+        for item in os.listdir(base_dir):
+            bin_path = os.path.join(base_dir, item, "bin", "gswin64c.exe")
+            if os.path.exists(bin_path): return bin_path, None
+
+    return None, None
+
+
+def run_ghostscript(gs_path, gs_lib_path, input_pdf, output_pdf, quality="/ebook"):
+    """全局统一执行 Ghostscript 压缩/扁平化任务"""
+    cmd = [gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4", f"-dPDFSETTINGS={quality}",
+           "-dNOPAUSE", "-dQUIET", "-dBATCH"]
+    if gs_lib_path:
+        cmd.insert(1, f"-I{gs_lib_path}")
+    cmd.extend([f"-sOutputFile={output_pdf}", input_pdf])
+
+    subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+
+
+def get_unique_filepath(directory, desired_filename):
+    """自动处理重名文件，若存在则加 _1, _2 等后缀"""
+    final_path = os.path.join(directory, desired_filename)
+    counter = 1
+    name_no_ext, ext = os.path.splitext(desired_filename)
+    while os.path.exists(final_path):
+        final_path = os.path.join(directory, f"{name_no_ext}_{counter}{ext}")
+        counter += 1
+    return final_path
 
 
 def detect_smart_segments(pdf_doc):

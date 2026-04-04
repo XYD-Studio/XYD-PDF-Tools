@@ -17,7 +17,10 @@ from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QPixmap
 import fitz
 from core.pdf_viewer import PDFGraphicsView
-from core.utils import detect_smart_segments, UniversalSegmentDialog
+
+from core.utils import (detect_smart_segments, UniversalSegmentDialog,
+                        find_ghostscript, run_ghostscript, MM_TO_PTS,
+                        BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_RED, BTN_GRAY, BTN_ORANGE)
 
 # ================= 尝试导入工业级数字签名库 =================
 try:
@@ -30,48 +33,8 @@ try:
     PYHANKO_AVAILABLE = True
 except ImportError:
     PYHANKO_AVAILABLE = False
-# =================================================================
-
-MM_TO_PTS = 72 / 25.4
-
-BTN_BLUE = "background-color: #3498DB; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
-BTN_GREEN = "background-color: #2ECC71; color: white; font-weight: bold; padding: 10px; border-radius: 4px;"
-BTN_PURPLE = "background-color: #9B59B6; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
-BTN_RED = "background-color: #E74C3C; color: white; font-weight: bold; padding: 10px; border-radius: 4px;"
-BTN_GRAY = "background-color: #ECF0F1; color: #2C3E50; font-weight: bold; padding: 6px; border-radius: 4px; border: 1px solid #BDC3C7;"
-BTN_ORANGE = "background-color: #E67E22; color: white; font-weight: bold; padding: 8px; border-radius: 4px;"
 
 
-# ================= 查找 GS 引擎辅助函数 =================
-def get_base_path():
-    if getattr(sys, 'frozen', False):
-        return sys._MEIPASS
-    return os.path.abspath(".")
-
-
-def find_ghostscript():
-    base_path = get_base_path()
-    bundled_gs = os.path.join(base_path, "gs_portable", "bin", "gswin64c.exe")
-    bundled_lib = os.path.join(base_path, "gs_portable", "lib")
-
-    if os.path.exists(bundled_gs) and os.path.exists(bundled_lib):
-        return bundled_gs, bundled_lib
-
-    possible_paths = [r"C:\Program Files\gs\gs10.04.0\bin\gswin64c.exe",
-                      r"D:\Program Files\gs\gs10.04.0\bin\gswin64c.exe"]
-    if shutil.which("gswin64c"): return "gswin64c", None
-    for p in possible_paths:
-        if os.path.exists(p): return p, None
-
-    base_dir = r"C:\Program Files\gs"
-    if os.path.exists(base_dir):
-        for item in os.listdir(base_dir):
-            bin_path = os.path.join(base_dir, item, "bin", "gswin64c.exe")
-            if os.path.exists(bin_path): return bin_path, None
-    return None, None
-
-
-# =======================================================
 
 
 class StamperWorker(QThread):
@@ -288,15 +251,12 @@ class StamperWorker(QThread):
         current_file = tmp_visual
 
         if self.use_gs_compress and self.gs_path:
-            cmd = [self.gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4", f"-dPDFSETTINGS={self.gs_quality}",
-                   "-dNOPAUSE", "-dQUIET", "-dBATCH"]
-            if self.gs_lib_path: cmd.insert(1, f"-I{self.gs_lib_path}")
-            cmd.extend([f"-sOutputFile={tmp_gs}", current_file])
             try:
-                subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+                run_ghostscript(self.gs_path, self.gs_lib_path, current_file, tmp_gs, quality=self.gs_quality)
                 current_file = tmp_gs
             except Exception as e:
                 print(f"GS压缩失败，跳过: {e}")
+
 
         if self.use_pki and PYHANKO_AVAILABLE:
             self._apply_pki_signature(current_file, final_out_path)
@@ -591,16 +551,17 @@ class StamperWidget(QWidget):
                 self.progress_bar.setValue(int(i / len(filepaths) * 100))
                 QApplication.processEvents()
                 tmp_flatten_path = path + ".flatten.tmp.pdf"
-                cmd = [self.gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4", "-dPDFSETTINGS=/printer",
-                       "-dNOPAUSE", "-dQUIET", "-dBATCH"]
-                if self.gs_lib_path: cmd.insert(1, f"-I{self.gs_lib_path}")
-                cmd.extend([f"-sOutputFile={tmp_flatten_path}", path])
                 try:
-                    subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+                    run_ghostscript(self.gs_path, self.gs_lib_path, path, tmp_flatten_path, quality="/printer")
                     doc = fitz.open(tmp_flatten_path)
-                    self.pdf_doc.insert_pdf(doc)
-                    doc.close()
-                    os.remove(tmp_flatten_path)
+                # if self.gs_lib_path: cmd.insert(1, f"-I{self.gs_lib_path}")
+                # cmd.extend([f"-sOutputFile={tmp_flatten_path}", path])
+                # try:
+                #     subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+                #     doc = fitz.open(tmp_flatten_path)
+                #     self.pdf_doc.insert_pdf(doc)
+                #     doc.close()
+                #     os.remove(tmp_flatten_path)
                 except Exception as e:
                     print(f"扁平化失败 {path}: {e}")
                     doc = fitz.open(path)

@@ -12,6 +12,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from core.ui_components import FileListManagerWidget
 from PyPDF2 import PdfMerger, PdfReader, PdfWriter
 import fitz
+from core.utils import get_unique_filepath
 
 
 # ================= 书签拆分高级配置弹窗 =================
@@ -225,13 +226,7 @@ class ToolkitWorker(QThread):
                         else:
                             final_name = f"{prefix}{clean_title}{suffix}.pdf"
 
-                        final_path = os.path.join(self.out_dir, final_name)
-
-                        counter = 1
-                        while os.path.exists(final_path):
-                            name_no_ext, ext = os.path.splitext(final_name)
-                            final_path = os.path.join(self.out_dir, f"{name_no_ext}_{counter}{ext}")
-                            counter += 1
+                        final_path = get_unique_filepath(self.out_dir, final_name)
 
                         new_doc = fitz.Document()
                         new_doc.insert_pdf(doc, from_page=i, to_page=i)
