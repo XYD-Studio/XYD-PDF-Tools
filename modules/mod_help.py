@@ -139,8 +139,8 @@ class HelpWidget(QWidget):
                         <li><b>PDF 转图片型 PDF：</b>专治各种字体缺失、乱码、不可打印的“顽固 PDF”。它会将所有页面以设定 DPI 栅格化为图片，再重新打包为绝对兼容的只读 PDF。</li>
                         <li><b>PDF 批量导出图片：</b>将 PDF 每一页导出为高清 JPG 或 PNG，支持开启透明通道（仅PNG）。</li>
                     </ul>
-                    <h2>📐 模块 6：线稿图片转 DXF (新功能)</h2>
-                    <p>专为设计师与工程师打造，一键将手绘线稿、扫描图纸转化为 CAD 可编辑的矢量 DXF 文件。</p>
+                    <h2>📐 模块 6：线稿图片转DXF</h2>
+                    <p>专为设计师与工程师打造，一键将手绘线稿、手写签名转化为 CAD 可编辑的矢量 DXF 文件。</p>
                     <ul>
                         <li><b>实时毫秒级预览：</b>拖动右侧参数滑块，左侧画面会实时显示提取出的红色矢量线条，所见即所得。</li>
                         <li><b>黑白反转：</b>通常线稿为白底黑线，勾选此项可精确识别黑色线条。如果是黑底白线则取消勾选。</li>
@@ -187,7 +187,7 @@ class HelpWidget(QWidget):
                         </a>
                         <br>
                         <a href="https://www.xy-d.top/" class="logo-link">
-                            <img src="file:///{0}" alt="玄宇绘世设计工作室" height="35" style="margin-top: 10px;">
+                            <img src="public/logo.png" alt="玄宇绘世设计工作室" height="35" style="margin-top: 10px;">
                         </a>
                     </div>
                 </body>
