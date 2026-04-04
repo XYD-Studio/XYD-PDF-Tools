@@ -15,6 +15,7 @@ from modules.mod_cropper import CropperWidget
 from modules.mod_help import HelpWidget            # <--- 导入独立的帮助模块
 from modules.mod_img2dxf import ImgToDxfWidget     # <--- 导入即将新增的 DXF 模块
 from core.utils import get_base_path               # <--- 统一路径管理
+from modules.mod_img_inserter import ImgInserterWidget
 
 try:
     site_packages = site.getsitepackages()[0]
@@ -192,6 +193,7 @@ class MainWindow(QMainWindow):
             "🗜️  PDF与图片压缩",
             "🛠️  PDF综合工具箱",
             "📐  线稿智能转DXF",
+            "🖼️  批量一对一加图",
             "❓  操作指南与帮助"
         ])
         self.menu_list.currentRowChanged.connect(self.switch_tab)
@@ -231,6 +233,7 @@ class MainWindow(QMainWindow):
         self.page_comp = CompressorWidget()
         self.page_tool = ToolkitWidget()
         self.page_dxf = ImgToDxfWidget()   # <--- 实例化 DXF 模块
+        self.page_inserter = ImgInserterWidget()
         self.page_help = HelpWidget()
 
         self.stack.addWidget(self.page_stamp)
@@ -239,6 +242,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_comp)
         self.stack.addWidget(self.page_tool)
         self.stack.addWidget(self.page_dxf)  # <--- 加入 Stack
+        self.stack.addWidget(self.page_inserter)
         self.stack.addWidget(self.page_help)
 
         layout.addWidget(self.menu_list)
