@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene
 import fitz
 
 from core.ui_components import FileListManagerWidget
-from core.utils import detect_smart_segments, UniversalSegmentDialog, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_GRAY, BTN_RED
+from core.utils import detect_smart_segments, UniversalSegmentDialog, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_GRAY, BTN_RED,merge_pdf_with_smart_toc
 
 
 
@@ -506,23 +506,24 @@ class CropperWidget(QWidget):
         self.pdf_doc = fitz.Document()
 
         filepaths = self.file_manager.get_all_filepaths()
+        toc_list = []  # 新增，用于接管书签
+
         for path in filepaths:
             ext = os.path.splitext(path)[1].lower()
             if ext == '.pdf':
                 doc = fitz.open(path)
-                self.pdf_doc.insert_pdf(doc)
+                merge_pdf_with_smart_toc(doc, os.path.basename(path), self.pdf_doc, toc_list)
                 doc.close()
             else:
-                # 把图片转成一页极清 PDF 塞进去
+                # 混装图片的转化为 PDF 后，依然使用智能书签引擎合并
                 img = fitz.open(path)
-                rect = img[0].rect
                 pdfbytes = img.convert_to_pdf()
                 img.close()
                 imgPDF = fitz.open("pdf", pdfbytes)
-                self.pdf_doc.insert_pdf(imgPDF)
+                merge_pdf_with_smart_toc(imgPDF, os.path.basename(path), self.pdf_doc, toc_list)
                 imgPDF.close()
 
-        self.preview_view.load_pdf(self.pdf_doc)
+        self.pdf_doc.set_toc(toc_list)  # 应用书签
         QMessageBox.information(self, "成功", f"生成混合阵列完毕，共计 {len(self.pdf_doc)} 页。")
 
     def detect_segments(self):

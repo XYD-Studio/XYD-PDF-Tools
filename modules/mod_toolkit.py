@@ -167,25 +167,23 @@ class ToolkitWorker(QThread):
             max_workers = max(1, os.cpu_count() - 1)
 
             if "合并" in self.mode:
-                self.progress.emit(50, "正在合并PDF...")
-                merger = PdfMerger()
-                for p in self.paths:
-                    if p.lower().endswith('.pdf'): merger.append(p)
-                merger.write(self.out_dir)
-                merger.close()
+                self.progress.emit(50, "正在进行超高速 PDF 合并与智能大纲重建...")
+                from core.utils import merge_pdf_with_smart_toc
+                merged_doc = fitz.Document()
+                toc_list = []
 
-            elif self.mode == "PDF拆分为单页":
                 total = len(self.paths)
                 for idx, p in enumerate(self.paths):
-                    self.progress.emit(int(idx / total * 100), f"正在拆分 {os.path.basename(p)}...")
+                    self.progress.emit(int(idx / total * 100), f"正在合并: {os.path.basename(p)}...")
                     if p.lower().endswith('.pdf'):
-                        reader = PdfReader(p)
-                        base = os.path.splitext(os.path.basename(p))[0]
-                        for i, page in enumerate(reader.pages):
-                            writer = PdfWriter()
-                            writer.add_page(page)
-                            with open(os.path.join(self.out_dir, f"{base}_p{i + 1}.pdf"), "wb") as f:
-                                writer.write(f)
+                        doc = fitz.open(p)
+                        # 调用刚刚封装的智能书签融合算法
+                        merge_pdf_with_smart_toc(doc, os.path.basename(p), merged_doc, toc_list)
+                        doc.close()
+
+                merged_doc.set_toc(toc_list)
+                merged_doc.save(self.out_dir)
+                merged_doc.close()
 
             elif "按书签拆分" in self.mode:
                 import re

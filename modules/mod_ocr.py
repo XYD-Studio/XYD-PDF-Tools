@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import copy
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-                             QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,
+                             QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,QCheckBox,
                              QMessageBox, QFileDialog, QProgressBar, QInputDialog, QHeaderView, QSplitter,
                              QAbstractItemView)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -11,7 +11,7 @@ import fitz
 
 from core.pdf_viewer import PDFGraphicsView
 from core.ui_components import FileListManagerWidget
-from core.utils import detect_smart_segments, UniversalSegmentDialog, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_GRAY
+from core.utils import detect_smart_segments, UniversalSegmentDialog, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_GRAY,merge_pdf_with_smart_toc
 
 class OCRWorker(QThread):
     progress = pyqtSignal(int, str)
@@ -344,11 +344,11 @@ class OCRExtractorWidget(QWidget):
         toc_list = []
 
         filepaths = self.file_manager.get_all_filepaths()
+        from core.utils import merge_pdf_with_smart_toc
         for path in filepaths:
             doc = fitz.open(path)
-            start_page = len(self.pdf_doc)
-            toc_list.append([1, os.path.basename(path), start_page + 1])
-            self.pdf_doc.insert_pdf(doc)
+            # 去除多余的参数，使用纯净版
+            merge_pdf_with_smart_toc(doc, os.path.basename(path), self.pdf_doc, toc_list)
             doc.close()
 
         self.pdf_doc.set_toc(toc_list)
