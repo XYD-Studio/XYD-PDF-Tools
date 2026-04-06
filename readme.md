@@ -1,4 +1,4 @@
-# 📚 PDF 聚合工作站 (PDF Aggregation Workstation) V2.1
+# 📚 PDF 聚合工作站 (PDF Aggregation Workstation) 
 
 ![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)
 ![PyQt5](https://img.shields.io/badge/PyQt5-GUI-brightgreen.svg)
