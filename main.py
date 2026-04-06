@@ -170,7 +170,7 @@ GLOBAL_QSS = """
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF聚合工作站 V2.1")
+        self.setWindowTitle("PDF聚合工作站 V2.2")
         self.resize(1400, 900)
 
         icon_path = get_base_path('logo.ico')
@@ -321,7 +321,7 @@ if __name__ == "__main__":
             # 主标题（阴影）
             painter.setPen(QColor(30, 40, 60, 100))
             painter.setFont(QFont("Microsoft YaHei", 28, QFont.Bold))
-            painter.drawText(2, -28, self.width, self.height, Qt.AlignCenter, "PDF 聚合工作站")
+            painter.drawText(2, -28, self.width, self.height, Qt.AlignCenter, "PDF 智能聚合工作站")
 
             # 主标题（渐变）
             title_grad = QLinearGradient(self.width // 2 - 150, 0, self.width // 2 + 150, 0)
@@ -329,12 +329,12 @@ if __name__ == "__main__":
             title_grad.setColorAt(0.5, QColor(255, 255, 255))
             title_grad.setColorAt(1, QColor(150, 180, 255))
             painter.setPen(QPen(QBrush(title_grad), 1))
-            painter.drawText(0, -30, self.width, self.height, Qt.AlignCenter, "PDF 聚合工作站")
+            painter.drawText(0, -30, self.width, self.height, Qt.AlignCenter, "PDF 智能聚合工作站")
 
             # 副标题
             painter.setPen(QColor(80, 110, 150))
             painter.setFont(QFont("Microsoft YaHei", 12))
-            painter.drawText(0, 25, self.width, self.height, Qt.AlignCenter, "V 2.1 Professional Edition")
+            painter.drawText(0, 25, self.width, self.height, Qt.AlignCenter, "V 2.2 Professional Edition")
             painter.setPen(QColor(100, 120, 150))
             painter.setFont(QFont("Microsoft YaHei", 11))
             painter.drawText(0, 55, self.width, self.height, Qt.AlignCenter, "玄宇绘世设计工作室出品")
@@ -375,7 +375,7 @@ if __name__ == "__main__":
             # 版本号
             painter.setPen(QColor(70, 90, 120, 150))
             painter.setFont(QFont("Microsoft YaHei", 8))
-            painter.drawText(self.width - 95, self.height - 15, "Build 2026.03")
+            painter.drawText(self.width - 95, self.height - 15, "Build 2026.04")
 
             painter.end()
             self.setPixmap(pixmap)

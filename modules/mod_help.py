@@ -75,7 +75,7 @@ class HelpWidget(QWidget):
                 </head>
                 <body>
                     <div class="header">
-                        <span class="studio-name">📚 PDF 聚合工作站 V2.0 - 操作指南</span>
+                        <span class="studio-name">📚 PDF 聚合工作站 V2.2 - 操作指南</span>
                     </div>
                     <p>欢迎使用本系统！本软件专为工程图纸、批量文档的高效处理而设计，请仔细阅读以下各模块的使用说明，掌握其中的高级特性。</p>
 
