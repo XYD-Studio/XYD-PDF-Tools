@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import uuid
 import copy
@@ -16,6 +17,7 @@ from PyQt5.QtGui import QPixmap
 import fitz
 
 from core.pdf_viewer import PDFGraphicsView
+from core.ui_components import FileListManagerWidget
 from core.utils import (detect_smart_segments, UniversalSegmentDialog,
                         find_ghostscript, run_ghostscript, MM_TO_PTS, get_unique_filepath,
                         merge_pdf_with_smart_toc, get_sub_toc, reinject_toc_after_gs,
@@ -39,15 +41,17 @@ class StamperWorker(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, file_paths, page_positions, export_mode, output_path, prefer_filename, prefix="", suffix="",
+    def __init__(self, file_paths, page_positions, export_mode, output_path, prefer_filename, pre_flatten=False,
+                 prefix="", suffix="",
                  stamp_dpi=300, use_gs_compress=False, gs_quality="/ebook", gs_path=None, gs_lib_path=None,
                  use_pki=False, pfx_path="", pfx_pwd="", pki_target_id="first"):
         super().__init__()
-        self.file_paths = file_paths  # 💡 传源文件列表
+        self.file_paths = file_paths
         self.page_positions = page_positions
         self.export_mode = export_mode
         self.output_path = output_path
         self.prefer_filename = prefer_filename
+        self.pre_flatten = pre_flatten  # 💡 接收预扁平化参数
         self.prefix = prefix
         self.suffix = suffix
         self.stamp_dpi = stamp_dpi
@@ -197,8 +201,22 @@ class StamperWorker(QThread):
             total_pdfs = len(self.file_paths)
 
             for idx, pdf_path in enumerate(self.file_paths):
+                # 💡 核心修复：如果在 UI 勾选了“预先扁平化”，在后台读取前强制过一遍 GS
+                working_pdf_path = pdf_path
+                temp_flattened_path = None
+                if self.pre_flatten and self.gs_path:
+                    self.status.emit(f"正在预先扁平化(拍平签名): {os.path.basename(pdf_path)}")
+                    temp_flattened_path = os.path.join(tempfile.gettempdir(), f"flat_{uuid.uuid4().hex}.pdf")
+                    try:
+                        run_ghostscript(self.gs_path, self.gs_lib_path, pdf_path, temp_flattened_path,
+                                        quality="/printer")
+                        working_pdf_path = temp_flattened_path
+                    except Exception as e:
+                        print(f"后台预扁平化失败: {e}")
+                        working_pdf_path = pdf_path
+
                 self.status.emit(f"正在处理源文件: {os.path.basename(pdf_path)}")
-                doc = fitz.open(pdf_path)
+                doc = fitz.open(working_pdf_path)
                 total_local = len(doc)
 
                 for local_page_num in range(total_local):
@@ -226,6 +244,10 @@ class StamperWorker(QThread):
                         single_doc.close()
 
                 doc.close()
+                # 处理完即刻销毁预扁平化的临时文件
+                if temp_flattened_path and os.path.exists(temp_flattened_path):
+                    os.remove(temp_flattened_path)
+
                 global_page_counter += total_local
                 self.progress.emit(int((idx + 1) / total_pdfs * 80))
 
@@ -251,6 +273,7 @@ class StamperWidget(QWidget):
         self.pdf_doc = None
         self.segments = []
         self.page_stamp_positions = {}
+        self.original_filenames = []
         self.global_stamps = []
         self.gs_path, self.gs_lib_path = find_ghostscript()
         self.pfx_path = ""
@@ -293,7 +316,7 @@ class StamperWidget(QWidget):
         self.file_manager = FileListManagerWidget(accept_exts=['.pdf'], title_desc="PDF Files (*.pdf)")
         l_left.addWidget(self.file_manager, 1)
 
-        self.chk_pre_gs = QCheckBox("🛠️ 合并前用GS扁平化 (破除Acrobat密码锁)")
+        self.chk_pre_gs = QCheckBox("🛠️ 合并前用GS扁平化 (破除Acrobat密码锁及数字签名)")
         self.chk_pre_gs.setStyleSheet("color: #E67E22; font-weight: bold;")
         if not self.gs_path:
             self.chk_pre_gs.setEnabled(False);
@@ -497,12 +520,14 @@ class StamperWidget(QWidget):
     def merge_pdfs(self):
         if self.file_manager.count() == 0: return QMessageBox.warning(self, "提示", "请先添加PDF文件！")
         self.pdf_doc = fitz.Document()
+        self.original_filenames = []
         toc_list = []
         filepaths = self.file_manager.get_all_filepaths()
         use_pre_flatten = self.chk_pre_gs.isChecked() and self.gs_path
         prefer_filename = self.chk_toc_strategy.isChecked()
 
         for i, path in enumerate(filepaths):
+            self.original_filenames.append(os.path.basename(path))
             if use_pre_flatten:
                 self.progress_bar.setValue(int(i / len(filepaths) * 100))
                 QApplication.processEvents()
@@ -744,14 +769,15 @@ class StamperWidget(QWidget):
             path = QFileDialog.getExistingDirectory(self, "选择保存目录")
             if not path: return
 
-        self.btn_export.setEnabled(False)  # 💡 防止双击
+        self.btn_export.setEnabled(False)
 
         self.worker = StamperWorker(
-            file_paths=self.file_manager.get_all_filepaths(),  # 💡 直接传物理文件列表
+            file_paths=self.file_manager.get_all_filepaths(),
             page_positions=self.page_stamp_positions,
             export_mode=mode,
             output_path=path,
             prefer_filename=self.chk_toc_strategy.isChecked(),
+            pre_flatten=self.chk_pre_gs.isChecked(),  # 💡 传入 UI 勾选的预扁平化参数
             prefix=self.input_prefix.text(),
             suffix=self.input_suffix.text(),
             stamp_dpi=int(self.cmb_stamp_dpi.currentText()),
