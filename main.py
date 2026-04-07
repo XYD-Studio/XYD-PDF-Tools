@@ -3,6 +3,7 @@ import os
 import site
 import ctypes
 import webbrowser
+import multiprocessing
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
                              QListWidget, QStackedWidget)
 from PyQt5.QtGui import QIcon

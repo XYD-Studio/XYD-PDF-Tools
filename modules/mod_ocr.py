@@ -97,13 +97,16 @@ class OCRWorker(QThread):
 
     def run(self):
         try:
+            self.progress.emit(0, "正在加载 OCR 引擎核心库 (首次加载可能需要几秒)...")
+
+            # 【回归最纯粹的懒加载】，只要打包脚本配置对，这里不需要任何骚操作
             import logging
             logging.getLogger("ppocr").setLevel(logging.WARNING)
             from paddleocr import PaddleOCR
             import numpy as np
             from PIL import Image
 
-            self.progress.emit(0, "正在加载稳定版 OCR 引擎...")
+            self.progress.emit(5, "OCR 引擎加载成功，正在初始化识别模型...")
             ocr = PaddleOCR(use_angle_cls=True, lang="ch", use_gpu=False, show_log=False, enable_mkldnn=False)
 
             results = []
@@ -141,8 +144,9 @@ class OCRWorker(QThread):
 
         except Exception as e:
             import traceback
-            print(traceback.format_exc())
-            self.progress.emit(0, f"OCR 提取异常: {str(e)}")
+            error_msg = traceback.format_exc()
+            print(error_msg)  # 留着打印，万一报错还能看到
+            self.progress.emit(0, f"OCR 提取异常: 请检查环境或依赖。详细报错已输出控制台。")
 
 
 # ================== 界面控制模块 ==================
@@ -150,9 +154,10 @@ class OCRExtractorWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.pdf_doc = None
-        self.segments = []  # 核心存储区域：保存当前的分段以及各个字段的框配置
+        self.segments = []
         self.page_configs = {}
         self.extracted_data = []
+        self.templates_cache = {}  # 核心：用于存储导出的各个图纸尺寸对应的框坐标
 
         self.fields_config = [
             {"name": "图号", "is_ocr": True, "static_val": ""},
@@ -170,7 +175,6 @@ class OCRExtractorWidget(QWidget):
         top_layout = QHBoxLayout(top_widget)
         top_layout.setContentsMargins(0, 0, 0, 0)
 
-        # --- 左区：文件与OCR配置 ---
         box_left = QGroupBox("1. 识别区域配置与生成")
         l_left = QVBoxLayout()
 
@@ -178,9 +182,9 @@ class OCRExtractorWidget(QWidget):
         l_left.addWidget(self.file_manager, 1)
 
         hz_cfg = QHBoxLayout()
-        btn_import = QPushButton("📥 导入配置")
+        btn_import = QPushButton("📥 导入配置/模板")
         btn_import.clicked.connect(self.import_config)
-        btn_export = QPushButton("📤 导出配置")
+        btn_export = QPushButton("📤 导出配置/模板")
         btn_export.clicked.connect(self.export_config)
         hz_cfg.addWidget(btn_import)
         hz_cfg.addWidget(btn_export)
@@ -227,7 +231,6 @@ class OCRExtractorWidget(QWidget):
         box_left.setLayout(l_left)
         top_layout.addWidget(box_left, 1)
 
-        # --- 右区：数据表格与导出 ---
         box_right = QGroupBox("2. 数据表格与导出")
         l_right = QVBoxLayout()
 
@@ -273,7 +276,6 @@ class OCRExtractorWidget(QWidget):
         top_layout.addWidget(box_right, 2)
         splitter.addWidget(top_widget)
 
-        # --- 下半部分：预览区 ---
         bottom_widget = QWidget()
         bottom_layout = QVBoxLayout(bottom_widget)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
@@ -295,7 +297,6 @@ class OCRExtractorWidget(QWidget):
     def get_field_names(self):
         return [f['name'] for f in self.fields_config]
 
-    # --- 同步视觉UI列顺序到底层数据模型 ---
     def save_visual_order(self):
         if self.table.columnCount() == 0: return
         header = self.table.horizontalHeader()
@@ -321,14 +322,11 @@ class OCRExtractorWidget(QWidget):
 
     def rename_column_header(self, logical_index):
         if logical_index == 0: return
-
         old_name = self.fields_config[logical_index - 1]['name']
         new_name, ok = QInputDialog.getText(self, "修改列名", f"将字段 '{old_name}' 修改为新名称:", text=old_name)
-
         if ok and new_name.strip() and new_name.strip() != old_name:
             new_name = new_name.strip()
-            if new_name in self.get_field_names():
-                return QMessageBox.warning(self, "错误", "该字段名已存在！")
+            if new_name in self.get_field_names(): return QMessageBox.warning(self, "错误", "该字段名已存在！")
 
             if self.pdf_doc and self.page_configs:
                 for p in self.page_configs:
@@ -341,44 +339,70 @@ class OCRExtractorWidget(QWidget):
                         seg['pos_pct'][new_name] = seg['pos_pct'].pop(old_name)
 
             for row in self.extracted_data:
-                if old_name in row:
-                    row[new_name] = row.pop(old_name)
+                if old_name in row: row[new_name] = row.pop(old_name)
 
             self.fields_config[logical_index - 1]['name'] = new_name
             self.save_visual_order()
             self.refresh_table_data()
 
-            mode = getattr(self.preview_view, 'mode', None)
-            curr_page = getattr(self.preview_view, 'current_page', -1)
-            if self.pdf_doc is not None and mode == 'ocr_final' and curr_page != -1:
-                self.preview_view.load_pdf(self.pdf_doc, target_page=curr_page, mode='ocr_final',
-                                           data_dict=self.page_configs)
+            # 触发UI热刷新
+            self._trigger_ui_hot_reload()
 
-    # --- 配置管理 ---
+    def _trigger_ui_hot_reload(self):
+        """核心内部方法：无缝热刷新所有的界面（预览器、设置框）"""
+        mode = getattr(self.preview_view, 'mode', None)
+        curr_page = getattr(self.preview_view, 'current_page', -1)
+        if self.pdf_doc is not None and mode == 'ocr_final' and curr_page != -1:
+            self.preview_view.load_pdf(self.pdf_doc, target_page=curr_page, mode='ocr_final',
+                                       data_dict=self.page_configs)
+
+        # 如果当前正打开着分段设框的弹窗，强行刷新它的表格数据
+        if hasattr(self, 'dialog') and self.dialog and self.dialog.isVisible():
+            if hasattr(self.dialog, 'refresh_table'):
+                self.dialog.refresh_table()
+
+    # --- 升级：带模板坐标导出的配置管理 ---
     def export_config(self):
-        path, _ = QFileDialog.getSaveFileName(self, "导出字段配置", "OCR_Fields_Config.json", "JSON (*.json)")
+        # 抓取当前所有页面尺寸及其对应的框坐标，生成模板
+        templates = {}
+        if self.pdf_doc and self.page_configs:
+            for p_idx, boxes in self.page_configs.items():
+                rect = self.pdf_doc[p_idx].rect
+                size_key = f"{int(rect.width)}x{int(rect.height)}"
+                if size_key not in templates:
+                    templates[size_key] = boxes
+
+        out_data = {
+            "fields_config": self.fields_config,
+            "templates": templates
+        }
+
+        path, _ = QFileDialog.getSaveFileName(self, "导出字段配置与模板", "OCR_Templates_Config.json", "JSON (*.json)")
         if path:
             with open(path, 'w', encoding='utf-8') as f:
-                json.dump({"fields_config": self.fields_config}, f, ensure_ascii=False, indent=4)
-            QMessageBox.information(self, "成功", "配置已导出！")
+                json.dump(out_data, f, ensure_ascii=False, indent=4)
+            QMessageBox.information(self, "成功", "配置与尺寸模板已成功导出！")
 
     def import_config(self):
-        path, _ = QFileDialog.getOpenFileName(self, "导入字段配置", "", "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "导入字段配置与模板", "", "JSON (*.json)")
         if path:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+
                     if "fields_config" in data:
                         self.fields_config = data["fields_config"]
+                        self.templates_cache = data.get("templates", {})  # 加载记忆的模板
+
                         self.page_configs.clear()
-                        self.segments.clear()  # 导入新配置时强制清空旧分段数据
+                        self.segments.clear()
                         self.extracted_data.clear()
                         self.refresh_table_data()
-                        QMessageBox.information(self, "成功", "配置导入成功！请重新点击【智能分段设框】。")
+                        QMessageBox.information(self, "成功",
+                                                "配置模板导入成功！\n\n请直接点击【① 智能分段设框】，系统会自动为您套用记忆的框坐标。")
             except Exception as e:
                 QMessageBox.critical(self, "错误", f"配置导入失败: {e}")
 
-    # ================== 核心功能 1：安全添加字段与热刷新 ==================
     def add_field(self):
         self.save_visual_order()
         dialog = FieldConfigDialog(parent=self)
@@ -390,9 +414,7 @@ class OCRExtractorWidget(QWidget):
 
             self.fields_config.append(data)
 
-            # 【无损注入】：安全地将新字段的默认框推送到当前的字典中，绝对不干扰旧框！
             if data['is_ocr'] and self.pdf_doc is not None and len(self.segments) > 0:
-                # 计算一个错开的 Y 坐标，防止新框跟老的重叠
                 ocr_count = len([f for f in self.fields_config if f['is_ocr']])
                 offset_y = 100 + (ocr_count - 1) * 50
 
@@ -401,24 +423,15 @@ class OCRExtractorWidget(QWidget):
                     if new_name not in seg['pos_pct']:
                         seg['pos_pct'][new_name] = (100, offset_y, 150, 40)
 
-                    # 同步到包含的每一页（使用深拷贝 dict 避免页面联动污染）
                     for p in seg['pages']:
                         if p not in self.page_configs: self.page_configs[p] = {}
                         self.page_configs[p][new_name] = seg['pos_pct'][new_name]
 
-            # 填充表格空数据
             for row in self.extracted_data: row[new_name] = data['static_val']
             self.refresh_table_data()
 
-            # 【热更新】：如果当前正开着预览，瞬间刷新，框立马弹出来
-            mode = getattr(self.preview_view, 'mode', None)
-            curr_page = getattr(self.preview_view, 'current_page', -1)
-            if self.pdf_doc is not None and mode == 'ocr_final' and curr_page != -1:
-                # 重新加载当前页以刷新 Graphics 视图
-                self.preview_view.load_pdf(self.pdf_doc, target_page=curr_page, mode='ocr_final',
-                                           data_dict=self.page_configs)
-                QMessageBox.information(self, "提示",
-                                        f"已成功添加字段【{new_name}】，对应的识别框已热加载到图纸上！\n您可以直接移动它。")
+            # 【真·热更新触发】
+            self._trigger_ui_hot_reload()
 
     def edit_field(self):
         self.save_visual_order()
@@ -440,7 +453,6 @@ class OCRExtractorWidget(QWidget):
 
                 self.fields_config[idx] = new_data
 
-                # 安全字典映射转换
                 if self.pdf_doc is not None and len(self.segments) > 0:
                     for p in self.page_configs:
                         if old_name in self.page_configs[p]:
@@ -463,12 +475,7 @@ class OCRExtractorWidget(QWidget):
                         row[new_name] = val if new_data['is_ocr'] else new_data['static_val']
 
                 self.refresh_table_data()
-
-                mode = getattr(self.preview_view, 'mode', None)
-                curr_page = getattr(self.preview_view, 'current_page', -1)
-                if self.pdf_doc is not None and mode == 'ocr_final' and curr_page != -1:
-                    self.preview_view.load_pdf(self.pdf_doc, target_page=curr_page, mode='ocr_final',
-                                               data_dict=self.page_configs)
+                self._trigger_ui_hot_reload()
 
     def delete_field(self):
         self.save_visual_order()
@@ -488,12 +495,7 @@ class OCRExtractorWidget(QWidget):
                 if name in row: del row[name]
 
             self.refresh_table_data()
-
-            mode = getattr(self.preview_view, 'mode', None)
-            curr_page = getattr(self.preview_view, 'current_page', -1)
-            if self.pdf_doc is not None and mode == 'ocr_final' and curr_page != -1:
-                self.preview_view.load_pdf(self.pdf_doc, target_page=curr_page, mode='ocr_final',
-                                           data_dict=self.page_configs)
+            self._trigger_ui_hot_reload()
 
     def refresh_table_data(self):
         self.lbl_status.setText("当前字段配置: " + ", ".join(self.get_field_names()))
@@ -529,44 +531,56 @@ class OCRExtractorWidget(QWidget):
         self.pdf_doc.set_toc(toc_list)
         self.preview_view.load_pdf(self.pdf_doc)
 
-        # 用户重新生成大纲，意味着图纸变了，清空老旧分段坐标缓存
         self.segments.clear()
         self.page_configs.clear()
 
         QMessageBox.information(self, "成功", f"大纲预览生成，共 {len(self.pdf_doc)} 页")
 
-    # ================== 核心功能 2：安全增量进入分段设框 ==================
+    # --- 升级：检测分段时自动融合模板中的记忆坐标 ---
     def detect_segments(self):
         if not self.pdf_doc: return QMessageBox.warning(self, "错误", "请先生成大纲预览！")
         if not self.fields_config: return QMessageBox.warning(self, "提示", "请至少配置一个字段！")
 
-        # 1. 只有第一次或者刚合并完PDF(segments为空时) 才跑费时间的智能分段算法
         if not self.segments:
             self.segments = detect_smart_segments(self.pdf_doc)
 
         ocr_fields = [f['name'] for f in self.fields_config if f['is_ocr']]
 
-        # 2. 无损增量合并逻辑 (保证旧框不动，新框补充)
         for seg in self.segments:
+            p_idx = seg['pages'][0]
+            rect = self.pdf_doc[p_idx].rect
+            w, h = int(rect.width), int(rect.height)
+
+            # --- 智能匹配缓存模板 ---
+            matched_template = None
+            if self.templates_cache:
+                for t_key, t_boxes in self.templates_cache.items():
+                    tw, th = map(int, t_key.split('x'))
+                    # 容差设为 5 像素，应对各种图纸细微偏差
+                    if abs(w - tw) <= 5 and abs(h - th) <= 5:
+                        matched_template = t_boxes
+                        break
+
             if 'pos_pct' not in seg:
                 seg['pos_pct'] = {}
 
             current_boxes = seg['pos_pct']
             existing_keys = list(current_boxes.keys())
 
-            # 清理掉已经被用户在主界面删除的无关字段
             for k in existing_keys:
                 if k not in ocr_fields:
                     del current_boxes[k]
 
-            # 补齐新增的字段，并且计算合理的错开位置
             for i, field in enumerate(ocr_fields):
                 if field not in current_boxes:
-                    current_boxes[field] = (100, 100 + i * 50, 150, 40)
+                    # 如果模板匹配成功且包含该字段，优先使用模板坐标！否则套用默认。
+                    if matched_template and field in matched_template:
+                        current_boxes[field] = matched_template[field]
+                    else:
+                        current_boxes[field] = (100, 100 + i * 50, 150, 40)
 
             seg['pos_pct'] = current_boxes
 
-            # 3. 将最终的盒子坐标【深拷贝】到页面配置，防止页面间产生联动污染导致崩溃！
             for p in seg['pages']:
                 self.page_configs[p] = dict(current_boxes)
 
@@ -588,7 +602,6 @@ class OCRExtractorWidget(QWidget):
         self.segments[self.current_idx]['pos_pct'] = new_pos_dict
         self.segments[self.current_idx]['pos_set'] = True
 
-        # 同步应用到同尺寸组的所有页面（采用深拷贝 dict 防御）
         for p in self.segments[self.current_idx]['pages']:
             self.page_configs[p] = dict(new_pos_dict)
 

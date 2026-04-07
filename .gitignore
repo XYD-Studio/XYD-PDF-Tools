@@ -6,6 +6,8 @@ venv/
 build/
 dist/
 Output/
+*.spec
+*.iss
 
 # 编译缓存
 __pycache__/
@@ -18,5 +20,3 @@ __pycache__/
 *.log
 #其他文件
 License.txt
-PDF聚合工作站.spec
-PDF聚合工作站V2.1.iss
