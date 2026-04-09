@@ -10,9 +10,12 @@ PyInstaller.__main__.run([
     '-w',  # 隐藏控制台 (如果你想看黑框输出排错，可以先用 # 注释掉这行)
     '-i', 'logo.ico',
 
-    # 你的静态资源
+    # 静态资源
     '--add-data', 'logo.ico;.',
     '--add-data', 'gs_portable;gs_portable',
+
+    # 把 public 文件夹及其里面的图片打包进去！
+    '--add-data', 'public;public',
 
     # 强制收集依赖
     '--collect-all', 'Cython',

@@ -1,6 +1,9 @@
 import webbrowser
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser
 from core.utils import get_base_path
+# 1. 获取 logo.png 的绝对路径 (假设 public 文件夹和 main.py 在同级目录)
+import os
+
 
 
 class HelpWidget(QWidget):
@@ -23,9 +26,24 @@ class HelpWidget(QWidget):
         webbrowser.open(url.toString())
 
     def generate_help_text(self):
-        # ⚠️ 将你原本 main.py 中的 generate_help_text 里面的那个超长的 HTML 字符串直接复制到这里
-        # 注意：HTML里的图片路径调用改为 get_base_path('public/logo.png').replace('\\', '/')
-        logo_path = get_base_path('public/logo.png').replace('\\', '/')
+        import sys
+        import os
+        # 1. 内部定义一个局部函数，用于专门获取打包后的绝对路径 (绝不飘红)
+        def get_resource_path(relative_path):
+            if getattr(sys, 'frozen', False):
+                # 如果是运行打包后的 EXE，去 _MEIPASS 临时目录找
+                base_path = sys._MEIPASS
+            else:
+                # 如果是在 PyCharm 里运行，去当前工程根目录找
+                base_path = os.path.abspath(".")
+            return os.path.join(base_path, relative_path)
+
+        # 2. 调用上面的函数，获取 public/logo.png 的绝对路径
+        logo_abs_path = get_resource_path(os.path.join("public", "logo.png"))
+
+        # 3. 将 Windows 的反斜杠 \ 替换为正斜杠 /，确保 Qt 的 HTML 引擎能正确读取
+        logo_url = logo_abs_path.replace('\\', '/')
+
 
         html_content = f"""
                 <html>
@@ -195,8 +213,8 @@ class HelpWidget(QWidget):
                             <b>玄宇绘世设计工作室出品</b>
                         </a>
                         <br>
-                        <a href="https://www.xy-d.top/" class="logo-link">
-                            <img src="public/logo.png" alt="玄宇绘世设计工作室" height="35" style="margin-top: 10px;">
+                        <a href="https://www.xy-d.top/" class="logo-link">                            
+                            <img src="{logo_url}" alt="玄宇绘世设计工作室" height="35" style="margin-top: 10px;">
                         </a>
                     </div>
                 </body>
