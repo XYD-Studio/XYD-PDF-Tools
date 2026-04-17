@@ -171,7 +171,7 @@ GLOBAL_QSS = """
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF聚合工作站 V2.2")
+        self.setWindowTitle("PDF聚合工作站 V2.2.1")
         self.resize(1400, 900)
 
         icon_path = get_base_path('logo.ico')
@@ -335,7 +335,7 @@ if __name__ == "__main__":
             # 副标题
             painter.setPen(QColor(80, 110, 150))
             painter.setFont(QFont("Microsoft YaHei", 12))
-            painter.drawText(0, 25, self.width, self.height, Qt.AlignCenter, "V 2.2 Professional Edition")
+            painter.drawText(0, 25, self.width, self.height, Qt.AlignCenter, "V 2.2.1 Professional Edition")
             painter.setPen(QColor(100, 120, 150))
             painter.setFont(QFont("Microsoft YaHei", 11))
             painter.drawText(0, 55, self.width, self.height, Qt.AlignCenter, "玄宇绘世设计工作室出品")
