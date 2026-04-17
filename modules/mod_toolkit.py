@@ -184,6 +184,18 @@ class ToolkitWorker(QThread):
                 merged_doc.set_toc(toc_list)
                 merged_doc.save(self.out_dir)
                 merged_doc.close()
+            elif self.mode == "PDF拆分为单页":
+                total = len(self.paths)
+                for idx, p in enumerate(self.paths):
+                    self.progress.emit(int(idx / total * 100), f"正在拆分 {os.path.basename(p)}...")
+                    if p.lower().endswith('.pdf'):
+                        reader = PdfReader(p)
+                        base = os.path.splitext(os.path.basename(p))[0]
+                        for i, page in enumerate(reader.pages):
+                            writer = PdfWriter()
+                            writer.add_page(page)
+                            with open(os.path.join(self.out_dir, f"{base}_p{i + 1}.pdf"), "wb") as f:
+                                writer.write(f)
 
             elif "按书签拆分" in self.mode:
                 import re
