@@ -1,270 +1,29 @@
+# -*- coding: utf-8 -*-
 import os
-import sys
 import json
 import uuid
 import copy
-import io
-import math
-import shutil
-import tempfile
-from PIL import Image
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-                             QGroupBox, QLineEdit, QRadioButton, QMessageBox, QFileDialog, QProgressBar, QSplitter,
+                             QGroupBox, QLineEdit, QMessageBox, QFileDialog, QProgressBar, QSplitter,
                              QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QFormLayout, QDialogButtonBox,
                              QCheckBox, QComboBox, QApplication)
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap
 import fitz
 
 from core.pdf_viewer import PDFGraphicsView
-from core.ui_components import FileListManagerWidget
+from core.ui_components import FileListManagerWidget, ExportSettingsPanel, GSSettingsPanel
 from core.utils import (detect_smart_segments, UniversalSegmentDialog,
-                        find_ghostscript, run_ghostscript, MM_TO_PTS, get_unique_filepath,
-                        merge_pdf_with_smart_toc, get_sub_toc, reinject_toc_after_gs,
-                        BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_RED, BTN_GRAY, BTN_ORANGE)
+                        find_ghostscript, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_RED, BTN_GRAY, BTN_ORANGE)
+from core.pdf_engine import merge_pdf_with_smart_toc, run_ghostscript, BaseFakeProgressWorker
+from .worker import StamperWorker
 
 try:
-    from pyhanko.sign import signers
-    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
-    from pyhanko.sign.fields import SigFieldSpec, append_signature_field
-    from cryptography.hazmat.primitives.serialization import pkcs12
-    from cryptography.hazmat.primitives import serialization
+    import pyhanko
 
     PYHANKO_AVAILABLE = True
 except ImportError:
     PYHANKO_AVAILABLE = False
-
-
-class StamperWorker(QThread):
-    progress = pyqtSignal(int)
-    status = pyqtSignal(str)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-
-    def __init__(self, file_paths, page_positions, export_mode, output_path, prefer_filename, pre_flatten=False,
-                 prefix="", suffix="",
-                 stamp_dpi=300, use_gs_compress=False, gs_quality="/ebook", gs_path=None, gs_lib_path=None,
-                 use_pki=False, pfx_path="", pfx_pwd="", pki_target_id="first"):
-        super().__init__()
-        self.file_paths = file_paths
-        self.page_positions = page_positions
-        self.export_mode = export_mode
-        self.output_path = output_path
-        self.prefer_filename = prefer_filename
-        self.pre_flatten = pre_flatten  # 💡 接收预扁平化参数
-        self.prefix = prefix
-        self.suffix = suffix
-        self.stamp_dpi = stamp_dpi
-        self.use_gs_compress = use_gs_compress
-        self.gs_quality = gs_quality
-        self.gs_path = gs_path
-        self.gs_lib_path = gs_lib_path
-        self.use_pki = use_pki
-        self.pfx_path = pfx_path
-        self.pfx_pwd = pfx_pwd
-        self.pki_target_id = pki_target_id
-        self._image_cache = {}
-        self._pki_target_info = None
-
-    def _get_processed_stamp_bytes(self, stamp_path, w_mm, h_mm, effective_angle):
-        cache_key = (stamp_path, w_mm, h_mm, effective_angle)
-        if cache_key in self._image_cache: return self._image_cache[cache_key]
-
-        target_px_w = int((w_mm / 25.4) * self.stamp_dpi)
-        target_px_h = int((h_mm / 25.4) * self.stamp_dpi)
-
-        with Image.open(stamp_path) as img:
-            img = img.convert("RGBA")
-            resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
-            img = img.resize((target_px_w, target_px_h), resample=resample_filter)
-            if effective_angle != 0:
-                img = img.rotate(-effective_angle, expand=True, resample=resample_filter)
-            stream = io.BytesIO()
-            img.save(stream, format="PNG", optimize=True)
-            img_bytes = stream.getvalue()
-            self._image_cache[cache_key] = img_bytes
-            return img_bytes
-
-    def _apply_all_stamps_to_page(self, page, global_page_num):
-        stamps_list = self.page_positions.get(global_page_num, [])
-        page_rot = page.rotation
-
-        for stamp in stamps_list:
-            if not os.path.exists(stamp['path']): continue
-            w_mm, h_mm = stamp['w'], stamp['h']
-            w_pts, h_pts = w_mm * MM_TO_PTS, h_mm * MM_TO_PTS
-            pdf_x, pdf_y = stamp['pdf_x'], stamp['pdf_y']
-
-            visual_angle = stamp.get('angle', 0) % 360
-            phys_angle = (visual_angle - page_rot) % 360
-            img_bytes = self._get_processed_stamp_bytes(stamp['path'], w_mm, h_mm, phys_angle)
-
-            cx = pdf_x + w_pts / 2
-            cy = pdf_y + h_pts / 2
-            phys_center = fitz.Point(cx, cy) * page.derotation_matrix
-
-            rad = math.radians(phys_angle)
-            new_w_pts = abs(w_pts * math.cos(rad)) + abs(h_pts * math.sin(rad))
-            new_h_pts = abs(w_pts * math.sin(rad)) + abs(h_pts * math.cos(rad))
-
-            a_rect = fitz.Rect(phys_center.x - new_w_pts / 2, phys_center.y - new_h_pts / 2,
-                               phys_center.x + new_w_pts / 2, phys_center.y + new_h_pts / 2)
-
-            try:
-                page.insert_image(a_rect, stream=img_bytes, keep_proportion=False)
-            except TypeError:
-                page.insert_image(a_rect, stream=img_bytes)
-
-            is_target = False
-            if self.pki_target_id == "first" and self._pki_target_info is None:
-                is_target = True
-            elif self.pki_target_id == stamp.get('id') and self._pki_target_info is None:
-                is_target = True
-
-            if self.use_pki and is_target:
-                self._pki_target_info = {'page_idx': global_page_num, 'rect': a_rect, 'page_height': page.rect.height}
-
-    def _apply_pki_signature(self, input_pdf, output_pdf):
-        if not PYHANKO_AVAILABLE: shutil.copy2(input_pdf, output_pdf); return
-        from pyhanko.sign.fields import SigFieldSpec, append_signature_field
-        from pyhanko.sign import signers
-        from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
-        from cryptography.hazmat.primitives.serialization import pkcs12
-        from cryptography.hazmat.primitives import serialization
-
-        try:
-            with open(self.pfx_path, "rb") as f:
-                pfx_bytes = f.read()
-            private_key, cert, _ = pkcs12.load_key_and_certificates(pfx_bytes, self.pfx_pwd.encode('utf-8'))
-        except Exception as e:
-            raise ValueError(f"证书提取失败: {e}")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            key_path = os.path.join(tmpdir, "tmp_key.pem")
-            cert_path = os.path.join(tmpdir, "tmp_cert.pem")
-            with open(key_path, "wb") as f:
-                f.write(private_key.private_bytes(encoding=serialization.Encoding.PEM,
-                                                  format=serialization.PrivateFormat.PKCS8,
-                                                  encryption_algorithm=serialization.NoEncryption()))
-            with open(cert_path, "wb") as f:
-                f.write(cert.public_bytes(serialization.Encoding.PEM))
-            signer = signers.SimpleSigner.load(key_file=key_path, cert_file=cert_path, key_passphrase=None)
-
-        shutil.copy2(input_pdf, output_pdf)
-        with open(output_pdf, 'r+b') as f:
-            w = IncrementalPdfFileWriter(f)
-            if self._pki_target_info:
-                target = self._pki_target_info
-                box = (target['rect'].x0, target['page_height'] - target['rect'].y1, target['rect'].x1,
-                       target['page_height'] - target['rect'].y0)
-                sig_field = SigFieldSpec('DocumentSecurityLock', on_page=target['page_idx'], box=box)
-                append_signature_field(w, sig_field)
-            meta = signers.PdfSignatureMetadata(field_name='DocumentSecurityLock', location="System",
-                                                reason="文档防篡改")
-            try:
-                from pyhanko.stamp import TextStampStyle
-                style = TextStampStyle(stamp_text=' ', border_width=0)
-                pdf_signer = signers.PdfSigner(signature_meta=meta, signer=signer, stamp_style=style)
-                pdf_signer.sign_pdf(w, in_place=True)
-            except Exception:
-                signers.sign_pdf(w, meta, signer=signer, in_place=True,
-                                 appearance_text_params={'stamp_text': ' ', 'border_width': 0})
-
-    def _finalize_document(self, doc, final_out_path, target_toc):
-        tmp_visual = final_out_path + ".v.tmp.pdf"
-        doc.save(tmp_visual)
-        if self.use_gs_compress and self.gs_path:
-            tmp_gs = final_out_path + ".g.tmp.pdf"
-            self.progress.emit(-1)
-            try:
-                run_ghostscript(self.gs_path, self.gs_lib_path, tmp_visual, tmp_gs, quality=self.gs_quality)
-                os.remove(tmp_visual)
-                self.progress.emit(99)
-                self.status.emit("✅ 压缩完成！正在重写书签与数字签名...")
-                reinject_toc_after_gs(tmp_gs, target_toc)
-                os.rename(tmp_gs, tmp_visual)
-            except Exception as e:
-                pass
-
-        if self.use_pki and PYHANKO_AVAILABLE:
-            self._apply_pki_signature(tmp_visual, final_out_path)
-            if os.path.exists(tmp_visual): os.remove(tmp_visual)
-        else:
-            os.rename(tmp_visual, final_out_path)
-
-    def run(self):
-        try:
-            self._image_cache.clear()
-            export_doc = fitz.Document() if self.export_mode == 'merged' else None
-            toc_list = []
-            global_page_counter = 0
-            total_pdfs = len(self.file_paths)
-
-            for idx, pdf_path in enumerate(self.file_paths):
-                # 💡 核心修复：如果在 UI 勾选了“预先扁平化”，在后台读取前强制过一遍 GS
-                working_pdf_path = pdf_path
-                temp_flattened_path = None
-                if self.pre_flatten and self.gs_path:
-                    self.status.emit(f"正在预先扁平化(拍平签名): {os.path.basename(pdf_path)}")
-                    temp_flattened_path = os.path.join(tempfile.gettempdir(), f"flat_{uuid.uuid4().hex}.pdf")
-                    try:
-                        run_ghostscript(self.gs_path, self.gs_lib_path, pdf_path, temp_flattened_path,
-                                        quality="/printer")
-                        working_pdf_path = temp_flattened_path
-                    except Exception as e:
-                        print(f"后台预扁平化失败: {e}")
-                        working_pdf_path = pdf_path
-
-                self.status.emit(f"正在处理源文件: {os.path.basename(pdf_path)}")
-                doc = fitz.open(working_pdf_path)
-                total_local = len(doc)
-
-                for local_page_num in range(total_local):
-                    global_page_num = global_page_counter + local_page_num
-                    self._apply_all_stamps_to_page(doc[local_page_num], global_page_num)
-
-                if self.export_mode == 'merged':
-                    merge_pdf_with_smart_toc(doc, os.path.basename(pdf_path), export_doc, toc_list,
-                                             self.prefer_filename)
-                elif self.export_mode == 'batch':
-                    out_name = f"{self.prefix}{os.path.splitext(os.path.basename(pdf_path))[0]}{self.suffix}.pdf"
-                    final_out_path = get_unique_filepath(self.output_path, out_name)
-                    self._finalize_document(doc, final_out_path, doc.get_toc(simple=False))
-                elif self.export_mode == 'split':
-                    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-                    for local_page_num in range(total_local):
-                        single_doc = fitz.Document()
-                        single_doc.insert_pdf(doc, from_page=local_page_num, to_page=local_page_num)
-                        single_toc = [[1, base_name, 1]] if self.prefer_filename else get_sub_toc(
-                            doc.get_toc(simple=False), local_page_num, local_page_num)
-                        single_doc.set_toc(single_toc)
-                        out_name = f"{self.prefix}{base_name}_第{local_page_num + 1}页{self.suffix}.pdf"
-                        final_out_path = get_unique_filepath(self.output_path, out_name)
-                        self._finalize_document(single_doc, final_out_path, single_toc)
-                        single_doc.close()
-
-                doc.close()
-                # 处理完即刻销毁预扁平化的临时文件
-                if temp_flattened_path and os.path.exists(temp_flattened_path):
-                    os.remove(temp_flattened_path)
-
-                global_page_counter += total_local
-                self.progress.emit(int((idx + 1) / total_pdfs * 80))
-
-            if self.export_mode == 'merged':
-                export_doc.set_toc(toc_list)
-                final_out_path = get_unique_filepath(os.path.dirname(self.output_path),
-                                                     os.path.basename(self.output_path))
-                self._finalize_document(export_doc, final_out_path, toc_list)
-                export_doc.close()
-
-            self._image_cache.clear()
-            self.progress.emit(100)
-            self.finished.emit("🎉 所有加盖、压缩、防伪签名操作已完美执行完毕！")
-        except Exception as e:
-            import traceback;
-            traceback.print_exc()
-            self.error.emit(str(e))
 
 
 class StamperWidget(QWidget):
@@ -277,6 +36,7 @@ class StamperWidget(QWidget):
         self.global_stamps = []
         self.gs_path, self.gs_lib_path = find_ghostscript()
         self.pfx_path = ""
+        self.need_clean_annots = False
 
         self.fake_timer = QTimer(self)
         self.fake_timer.timeout.connect(self._on_fake_timer_tick)
@@ -312,14 +72,13 @@ class StamperWidget(QWidget):
         hz_cfg.addWidget(btn_export_cfg)
         l_left.addLayout(hz_cfg)
 
-        from core.ui_components import FileListManagerWidget
         self.file_manager = FileListManagerWidget(accept_exts=['.pdf'], title_desc="PDF Files (*.pdf)")
         l_left.addWidget(self.file_manager, 1)
 
         self.chk_pre_gs = QCheckBox("🛠️ 合并前用GS扁平化 (破除Acrobat密码锁及数字签名)")
         self.chk_pre_gs.setStyleSheet("color: #E67E22; font-weight: bold;")
         if not self.gs_path:
-            self.chk_pre_gs.setEnabled(False);
+            self.chk_pre_gs.setEnabled(False)
             self.chk_pre_gs.setText("🛠️ 合并前用GS扁平化 (未检测到环境)")
         l_left.addWidget(self.chk_pre_gs)
 
@@ -328,7 +87,7 @@ class StamperWidget(QWidget):
         self.chk_toc_strategy.setStyleSheet("color: #2C3E50; font-weight: bold;")
         l_left.addWidget(self.chk_toc_strategy)
 
-        btn_merge = QPushButton("🔄 生成合并预览 (首选必点)")
+        btn_merge = QPushButton("🔄 生成秒开预览 (首选必点)")
         btn_merge.setStyleSheet(BTN_BLUE)
         btn_merge.clicked.connect(self.merge_pdfs)
         l_left.addWidget(btn_merge)
@@ -352,7 +111,7 @@ class StamperWidget(QWidget):
         self.stamp_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         l_left.addWidget(self.stamp_table, 1)
 
-        box_left.setLayout(l_left);
+        box_left.setLayout(l_left)
         top_layout.addWidget(box_left, 1)
 
         box_right = QGroupBox("2. 智能排布、压缩与防伪签名导出")
@@ -368,24 +127,8 @@ class StamperWidget(QWidget):
         l_right.addWidget(btn_detect);
         l_right.addWidget(btn_preview)
 
-        l_right.addWidget(QLabel("导出拆分模式:"))
-        self.radio_merged = QRadioButton("合并为单一文件")
-        self.radio_merged.setChecked(True)
-        self.radio_batch = QRadioButton("批量按原文件拆分")
-        self.radio_split = QRadioButton("拆分为单页独立文件")
-        l_right.addWidget(self.radio_merged);
-        l_right.addWidget(self.radio_batch);
-        l_right.addWidget(self.radio_split)
-
-        hz_fix = QHBoxLayout()
-        self.input_prefix = QLineEdit();
-        self.input_prefix.setPlaceholderText("前缀")
-        self.input_suffix = QLineEdit();
-        self.input_suffix.setPlaceholderText("后缀")
-        hz_fix.addWidget(self.input_prefix);
-        hz_fix.addWidget(self.input_suffix)
-        l_right.addLayout(hz_fix)
-        l_right.addStretch()
+        self.export_panel = ExportSettingsPanel("导出模式设置:", default_mode='merged', allow_overwrite=True)
+        l_right.addWidget(self.export_panel)
 
         hz_stamp_dpi = QHBoxLayout()
         hz_stamp_dpi.addWidget(QLabel("🖼️ 图章画质:"))
@@ -395,15 +138,8 @@ class StamperWidget(QWidget):
         hz_stamp_dpi.addStretch()
         l_right.addLayout(hz_stamp_dpi)
 
-        hz_gs = QHBoxLayout()
-        self.chk_gs = QCheckBox("🗜️ 启用 GS 二次全局压缩")
-        self.cmb_gs_quality = QComboBox()
-        self.cmb_gs_quality.addItems(["/screen (72dpi)", "/ebook (150dpi)", "/printer (300dpi)"])
-        self.cmb_gs_quality.setCurrentIndex(1)
-        if not self.gs_path: self.chk_gs.setEnabled(False)
-        hz_gs.addWidget(self.chk_gs);
-        hz_gs.addWidget(self.cmb_gs_quality)
-        l_right.addLayout(hz_gs)
+        self.gs_panel = GSSettingsPanel(bool(self.gs_path))
+        l_right.addWidget(self.gs_panel)
 
         self.chk_pki = QCheckBox("🛡️ 附加防篡改保护锁 (防止他人用编辑器删图章)")
         if not PYHANKO_AVAILABLE:
@@ -420,8 +156,8 @@ class StamperWidget(QWidget):
         btn_pfx.clicked.connect(self.select_pfx)
         hz_pfx.addWidget(self.lbl_pfx);
         hz_pfx.addWidget(btn_pfx)
-        self.entry_pwd = QLineEdit();
-        self.entry_pwd.setEchoMode(QLineEdit.Password);
+        self.entry_pwd = QLineEdit()
+        self.entry_pwd.setEchoMode(QLineEdit.Password)
         self.entry_pwd.setPlaceholderText("提取密码")
         hz_pki_target = QHBoxLayout()
         self.cmb_pki_target = QComboBox()
@@ -445,7 +181,7 @@ class StamperWidget(QWidget):
         l_right.addWidget(self.lbl_status)
         l_right.addWidget(self.progress_bar)
 
-        box_right.setLayout(l_right);
+        box_right.setLayout(l_right)
         top_layout.addWidget(box_right, 1)
         splitter.addWidget(top_widget)
 
@@ -483,7 +219,7 @@ class StamperWidget(QWidget):
         self.fake_msg_idx += 1
 
     def _on_worker_progress(self, val):
-        if val == -1:
+        if val == BaseFakeProgressWorker.TRIGGER_FAKE_PROGRESS:
             self.fake_val = 80.0
             self.fake_msg_idx = 0
             self._on_fake_timer_tick()
@@ -523,29 +259,14 @@ class StamperWidget(QWidget):
         self.original_filenames = []
         toc_list = []
         filepaths = self.file_manager.get_all_filepaths()
-        use_pre_flatten = self.chk_pre_gs.isChecked() and self.gs_path
         prefer_filename = self.chk_toc_strategy.isChecked()
+        self.need_clean_annots = False
 
         for i, path in enumerate(filepaths):
             self.original_filenames.append(os.path.basename(path))
-            if use_pre_flatten:
-                self.progress_bar.setValue(int(i / len(filepaths) * 100))
-                QApplication.processEvents()
-                tmp_flatten_path = path + ".flatten.tmp.pdf"
-                try:
-                    run_ghostscript(self.gs_path, self.gs_lib_path, path, tmp_flatten_path, quality="/printer")
-                    doc = fitz.open(tmp_flatten_path)
-                    merge_pdf_with_smart_toc(doc, os.path.basename(path), self.pdf_doc, toc_list, prefer_filename)
-                    doc.close()
-                    os.remove(tmp_flatten_path)
-                except Exception as e:
-                    doc = fitz.open(path)
-                    merge_pdf_with_smart_toc(doc, os.path.basename(path), self.pdf_doc, toc_list, prefer_filename)
-                    doc.close()
-            else:
-                doc = fitz.open(path)
-                merge_pdf_with_smart_toc(doc, os.path.basename(path), self.pdf_doc, toc_list, prefer_filename)
-                doc.close()
+            doc = fitz.open(path)
+            merge_pdf_with_smart_toc(doc, os.path.basename(path), self.pdf_doc, toc_list, prefer_filename)
+            doc.close()
 
         self.pdf_doc.set_toc(toc_list)
         self.preview_view.load_pdf(self.pdf_doc)
@@ -598,14 +319,17 @@ class StamperWidget(QWidget):
             page = self.pdf_doc[page_num]
             for widget in page.widgets(): page.delete_widget(widget); deleted_count += 1
             for annot in page.annots(): page.delete_annot(annot); deleted_count += 1
+
         if deleted_count > 0:
+            self.need_clean_annots = True
             try:
                 self.preview_view.load_pdf(self.pdf_doc, target_page=self.preview_view.current_page,
                                            mode=getattr(self.preview_view, 'mode', 'normal'),
                                            data_dict=self.page_stamp_positions)
             except Exception:
                 self.preview_view.load_pdf(self.pdf_doc)
-            QMessageBox.information(self, "清理成功", f"成功清除了 {deleted_count} 个表单控件！")
+            QMessageBox.information(self, "清理成功",
+                                    f"UI视图成功清除了 {deleted_count} 个表单控件！导出时将会真正删除。")
         else:
             QMessageBox.warning(self, "无法清理", "未发现可清理的悬浮批注。")
 
@@ -696,7 +420,7 @@ class StamperWidget(QWidget):
     def refresh_stamp_table(self):
         self.stamp_table.setRowCount(len(self.global_stamps))
         current_target_id = self.cmb_pki_target.currentData() if hasattr(self, 'cmb_pki_target') else "first"
-        self.cmb_pki_target.clear();
+        self.cmb_pki_target.clear()
         self.cmb_pki_target.addItem("默认 (遇到第一个图章处)", userData="first")
         for i, st in enumerate(self.global_stamps):
             self.stamp_table.setItem(i, 0, QTableWidgetItem(st['name']))
@@ -730,6 +454,9 @@ class StamperWidget(QWidget):
         target_page = seg_data['pages'][0]
         self.preview_view.load_pdf(self.pdf_doc, target_page=target_page, mode='stamp_final',
                                    data_dict={target_page: seg_data['pos_pct']})
+
+        # 💡 [修复核心：调用底层的防翻页锁机制]
+        self.preview_view.set_nav_locked(True)
         self.btn_confirm_pos.show();
         self.btn_add_missing.show()
 
@@ -738,7 +465,13 @@ class StamperWidget(QWidget):
         new_stamps_list = self.preview_view.page_data_dict[self.preview_view.current_page]
         self.segments[self.current_idx]['pos_pct'] = new_stamps_list
         self.segments[self.current_idx]['pos_set'] = True
-        for p in self.segments[self.current_idx]['pages']: self.page_stamp_positions[p] = copy.deepcopy(new_stamps_list)
+
+        # 💡 确保将该设置深度同步应用到这一组的所有页！
+        for p in self.segments[self.current_idx]['pages']:
+            self.page_stamp_positions[p] = copy.deepcopy(new_stamps_list)
+
+        # 💡 解除防翻页锁
+        self.preview_view.set_nav_locked(False)
         self.btn_confirm_pos.hide()
         self.dialog.refresh_table();
         self.dialog.show()
@@ -750,6 +483,9 @@ class StamperWidget(QWidget):
                 seg_stamps = copy.deepcopy(self.global_stamps)
                 for i, st in enumerate(seg_stamps): st['pdf_x'] = 100; st['pdf_y'] = 100 + i * 150
                 self.page_stamp_positions[p] = seg_stamps
+
+        # 💡 终极预览模式：解锁防翻页
+        self.preview_view.set_nav_locked(False)
         self.preview_view.load_pdf(self.pdf_doc, mode='stamp_final', data_dict=self.page_stamp_positions)
         self.btn_confirm_pos.hide();
         self.btn_add_missing.show()
@@ -759,30 +495,38 @@ class StamperWidget(QWidget):
         if not self.file_manager.count() or not self.global_stamps: return QMessageBox.warning(self, "提示",
                                                                                                "未检测到文件或图章数据！")
         self.preview_view.save_current_page_state()
+
+        # 💡 终极修复：把用户微调后的数据统统吃进来
         self.page_stamp_positions.update(copy.deepcopy(self.preview_view.page_data_dict))
 
-        mode = 'merged' if self.radio_merged.isChecked() else ('batch' if self.radio_batch.isChecked() else 'split')
-        if mode == 'merged':
+        export_cfg = self.export_panel.get_config()
+        gs_cfg = self.gs_panel.get_config()
+
+        if export_cfg['mode'] == 'merged':
             path, _ = QFileDialog.getSaveFileName(self, "保存", "合并加盖图纸.pdf", "PDF (*.pdf)")
             if not path: return
-        else:
+        elif export_cfg['mode'] in ['batch', 'split']:
             path = QFileDialog.getExistingDirectory(self, "选择保存目录")
             if not path: return
+        elif export_cfg['mode'] == 'overwrite':
+            reply = QMessageBox.question(self, "高危操作确认",
+                                         "【原文件直接覆盖】模式将会彻底替换您的原始 PDF 文件且无法恢复！\n强烈建议提前做好备份。\n\n是否确定继续？",
+                                         QMessageBox.Yes | QMessageBox.No)
+            if reply != QMessageBox.Yes: return
+            path = ""
 
         self.btn_export.setEnabled(False)
 
         self.worker = StamperWorker(
             file_paths=self.file_manager.get_all_filepaths(),
             page_positions=self.page_stamp_positions,
-            export_mode=mode,
+            export_config=export_cfg,
+            gs_config=gs_cfg,
             output_path=path,
             prefer_filename=self.chk_toc_strategy.isChecked(),
-            pre_flatten=self.chk_pre_gs.isChecked(),  # 💡 传入 UI 勾选的预扁平化参数
-            prefix=self.input_prefix.text(),
-            suffix=self.input_suffix.text(),
+            pre_flatten=self.chk_pre_gs.isChecked(),
+            clean_annots=self.need_clean_annots,
             stamp_dpi=int(self.cmb_stamp_dpi.currentText()),
-            use_gs_compress=self.chk_gs.isChecked(),
-            gs_quality=self.cmb_gs_quality.currentText().split(" ")[0],
             gs_path=self.gs_path,
             gs_lib_path=self.gs_lib_path,
             use_pki=self.chk_pki.isChecked(),

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import copy
 import uuid
 import os
@@ -73,7 +74,7 @@ class ResizableStampItem(QGraphicsRectItem):
             with open(stamp_info.get('path', ''), 'rb') as f:
                 self.orig_pixmap.loadFromData(f.read())
         except Exception:
-            self.orig_pixmap = QPixmap(int(w_scene), int(h_scene));
+            self.orig_pixmap = QPixmap(int(w_scene), int(h_scene))
             self.orig_pixmap.fill(Qt.lightGray)
         self.setPen(QPen(Qt.NoPen))
         self.label_bg = QGraphicsRectItem(self)
@@ -97,10 +98,10 @@ class ResizableStampItem(QGraphicsRectItem):
                                                     Qt.SmoothTransformation)
             painter.drawPixmap(rect.toRect(), scaled_pixmap)
         if self.isSelected() or self.isUnderMouse():
-            painter.setPen(QPen(Qt.red, 2, Qt.DashLine));
-            painter.setBrush(Qt.NoBrush);
+            painter.setPen(QPen(Qt.red, 2, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
             painter.drawRect(rect)
-            painter.setBrush(Qt.red);
+            painter.setBrush(Qt.red)
             painter.drawRect(int(rect.right() - 10), int(rect.bottom() - 10), 10, 10)
 
     def hoverMoveEvent(self, event):
@@ -112,13 +113,13 @@ class ResizableStampItem(QGraphicsRectItem):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             if event.modifiers() == Qt.AltModifier:
-                self.view.duplicate_stamp(self.stamp_info);
-                event.accept();
+                self.view.duplicate_stamp(self.stamp_info)
+                event.accept()
                 return
             rect = self.rect()
             if event.pos().x() > rect.right() - 15 and event.pos().y() > rect.bottom() - 15:
-                self.resizing = True;
-                event.accept();
+                self.resizing = True
+                event.accept()
                 return
         super().mousePressEvent(event)
 
@@ -179,12 +180,12 @@ class ResizableStampItem(QGraphicsRectItem):
                     self.label.setPlainText(self.stamp_info['name'])
                     self.update()
         elif action == action_lock:
-            self.lock_ratio = not self.lock_ratio;
-            self.stamp_info['lock_ratio'] = self.lock_ratio;
+            self.lock_ratio = not self.lock_ratio
+            self.stamp_info['lock_ratio'] = self.lock_ratio
             self.update()
         elif action == action_rot_90:
-            new_angle = (self.rotation() + 90) % 360;
-            self.setRotation(new_angle);
+            new_angle = (self.rotation() + 90) % 360
+            self.setRotation(new_angle)
             self.stamp_info['angle'] = new_angle
         elif action == action_rot_cus:
             angle, ok = QInputDialog.getDouble(None, "自定义旋转", "输入角度:", self.rotation(), 0, 360, 1)
@@ -198,27 +199,29 @@ class _PDFGraphicsView(QGraphicsView):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.scene = QGraphicsScene(self);
+        self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
-        self.setRenderHint(QPainter.Antialiasing);
+        self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.pdf_doc = None;
-        self.current_page = -1;
+        self.pdf_doc = None
+        self.current_page = -1
         self.zoom_factor = 1.0
-        self.page_item = None;
+        self.page_item = None
         self.mode = 'view'
-        self.page_data_dict = {};
+        self.page_data_dict = {}
         self.dynamic_items = {}
         self.color_palette = [QColor(255, 0, 0), QColor(0, 0, 255), QColor(0, 200, 0), QColor(255, 140, 0),
                               QColor(128, 0, 128), QColor(0, 150, 255)]
 
+        self.allow_page_change = True  # 💡 新增导航开关
+
     def load_pdf(self, doc, target_page=0, mode='view', data_dict=None, **kwargs):
-        self.pdf_doc = doc;
-        self.mode = mode;
+        self.pdf_doc = doc
+        self.mode = mode
         self.page_data_dict = data_dict if data_dict is not None else {}
-        self.current_page = -1;
-        self.page_item = None;
+        self.current_page = -1
+        self.page_item = None
         self.dynamic_items.clear()
         self.show_page(target_page)
 
@@ -228,18 +231,16 @@ class _PDFGraphicsView(QGraphicsView):
         self.current_page = page_num
         page = self.pdf_doc[page_num]
 
-        # 💡 核心修复：保留透明通道 alpha=True
         pix = page.get_pixmap(matrix=fitz.Matrix(RENDER_SCALE, RENDER_SCALE), alpha=True)
-        # 根据是否存在 alpha 通道，智能选择 PyQt 渲染格式
         img_format = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
         img = QImage(pix.samples, pix.width, pix.height, pix.stride, img_format)
 
-        self.scene.clear();
+        self.scene.clear()
         self.dynamic_items.clear()
         self.page_item = self.scene.addPixmap(QPixmap.fromImage(img))
-        self.page_item.setZValue(-1);
+        self.page_item.setZValue(-1)
         self.scene.setSceneRect(QRectF(self.page_item.boundingRect()))
-        self.resetTransform();
+        self.resetTransform()
         self.scale(self.zoom_factor, self.zoom_factor)
 
         if self.current_page in self.page_data_dict:
@@ -247,7 +248,7 @@ class _PDFGraphicsView(QGraphicsView):
                 for stamp in self.page_data_dict[self.current_page]: self._draw_stamp(stamp)
             elif self.mode == 'ocr_final':
                 self._draw_ocr_boxes(self.page_data_dict[self.current_page])
-        self.pageChanged.emit(self.current_page);
+        self.pageChanged.emit(self.current_page)
         self.scene.update()
 
     def save_current_page_state(self):
@@ -264,8 +265,8 @@ class _PDFGraphicsView(QGraphicsView):
             new_pos = {}
             for field_name, item in self.dynamic_items.items():
                 new_pos[field_name] = (
-                item.pos().x() / RENDER_SCALE, item.pos().y() / RENDER_SCALE, item.rect().width() / RENDER_SCALE,
-                item.rect().height() / RENDER_SCALE)
+                    item.pos().x() / RENDER_SCALE, item.pos().y() / RENDER_SCALE, item.rect().width() / RENDER_SCALE,
+                    item.rect().height() / RENDER_SCALE)
             self.page_data_dict[self.current_page] = new_pos
 
     def _draw_stamp(self, stamp_info):
@@ -307,65 +308,73 @@ class _PDFGraphicsView(QGraphicsView):
     def delete_stamp(self, stamp_id):
         item = self.dynamic_items.get(stamp_id)
         if item:
-            self.scene.removeItem(item);
+            self.scene.removeItem(item)
             del self.dynamic_items[stamp_id]
             if self.current_page in self.page_data_dict:
                 self.page_data_dict[self.current_page] = [s for s in self.page_data_dict[self.current_page] if
                                                           s.get('id') != stamp_id]
 
     def wheelEvent(self, event: QWheelEvent):
+        # 💡 受控的滚轮事件
         if event.modifiers() == Qt.ControlModifier:
             zoom = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-            self.zoom_factor *= zoom;
+            self.zoom_factor *= zoom
             self.scale(zoom, zoom)
-        else:
+        elif self.allow_page_change:
             self.show_page(self.current_page + 1 if event.angleDelta().y() < 0 else self.current_page - 1)
 
 
 class PDFGraphicsView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.layout = QVBoxLayout(self);
+        self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
-        self.view = _PDFGraphicsView();
+        self.view = _PDFGraphicsView()
         self.layout.addWidget(self.view, 1)
         self.nav_layout = QHBoxLayout()
-        self.btn_zoom_out = QPushButton("➖ 缩小");
-        self.btn_zoom_fit = QPushButton("🔲 适应窗口");
+        self.btn_zoom_out = QPushButton("➖ 缩小")
+        self.btn_zoom_fit = QPushButton("🔲 适应窗口")
         self.btn_zoom_in = QPushButton("➕ 放大")
-        self.btn_prev = QPushButton("◀ 上一页");
+        self.btn_prev = QPushButton("◀ 上一页")
         self.btn_next = QPushButton("下一页 ▶")
-        self.entry_page = QLineEdit();
-        self.entry_page.setFixedWidth(60);
+        self.entry_page = QLineEdit()
+        self.entry_page.setFixedWidth(60)
         self.entry_page.setAlignment(Qt.AlignCenter)
         self.lbl_total = QLabel("/ 0 页")
         nav_btn_style = "padding: 5px 15px; font-weight: bold; background-color: #3498DB; color: white; border-radius: 4px;"
         zoom_btn_style = "padding: 5px 12px; font-weight: bold; background-color: #95A5A6; color: white; border-radius: 4px;"
-        self.btn_prev.setStyleSheet(nav_btn_style);
+        self.btn_prev.setStyleSheet(nav_btn_style)
         self.btn_next.setStyleSheet(nav_btn_style)
-        self.btn_zoom_out.setStyleSheet(zoom_btn_style);
-        self.btn_zoom_fit.setStyleSheet(zoom_btn_style);
+        self.btn_zoom_out.setStyleSheet(zoom_btn_style)
+        self.btn_zoom_fit.setStyleSheet(zoom_btn_style)
         self.btn_zoom_in.setStyleSheet(zoom_btn_style)
         self.entry_page.setStyleSheet("padding: 5px; border: 1px solid #BDC3C7; border-radius: 3px; font-weight: bold;")
         self.lbl_total.setStyleSheet("font-weight: bold; color: #2C3E50;")
-        self.nav_layout.addWidget(self.btn_zoom_out);
-        self.nav_layout.addWidget(self.btn_zoom_fit);
+        self.nav_layout.addWidget(self.btn_zoom_out)
+        self.nav_layout.addWidget(self.btn_zoom_fit)
         self.nav_layout.addWidget(self.btn_zoom_in)
         self.nav_layout.addStretch(1)
-        self.nav_layout.addWidget(self.btn_prev);
-        self.nav_layout.addWidget(QLabel("当前第"));
+        self.nav_layout.addWidget(self.btn_prev)
+        self.nav_layout.addWidget(QLabel("当前第"))
         self.nav_layout.addWidget(self.entry_page)
-        self.nav_layout.addWidget(self.lbl_total);
-        self.nav_layout.addWidget(self.btn_next);
+        self.nav_layout.addWidget(self.lbl_total)
+        self.nav_layout.addWidget(self.btn_next)
         self.nav_layout.addStretch(1)
         self.layout.addLayout(self.nav_layout)
-        self.btn_prev.clicked.connect(self._go_prev);
-        self.btn_next.clicked.connect(self._go_next);
+        self.btn_prev.clicked.connect(self._go_prev)
+        self.btn_next.clicked.connect(self._go_next)
         self.entry_page.returnPressed.connect(self._jump_page)
         self.view.pageChanged.connect(self._on_page_changed)
-        self.btn_zoom_in.clicked.connect(lambda: self._do_zoom(1.2));
-        self.btn_zoom_out.clicked.connect(lambda: self._do_zoom(1 / 1.2));
+        self.btn_zoom_in.clicked.connect(lambda: self._do_zoom(1.2))
+        self.btn_zoom_out.clicked.connect(lambda: self._do_zoom(1 / 1.2))
         self.btn_zoom_fit.clicked.connect(self._zoom_fit)
+
+    # 💡 导航锁接口
+    def set_nav_locked(self, locked):
+        self.btn_prev.setEnabled(not locked)
+        self.btn_next.setEnabled(not locked)
+        self.entry_page.setEnabled(not locked)
+        self.view.allow_page_change = not locked
 
     def _do_zoom(self, factor):
         if self.view.page_item: self.view.zoom_factor *= factor; self.view.scale(factor, factor)
@@ -396,13 +405,13 @@ class PDFGraphicsView(QWidget):
         if not self.view.page_item: return
         rect, view_rect = self.view.page_item.boundingRect(), self.view.viewport().rect()
         ratio = min(view_rect.width() / rect.width(), view_rect.height() / rect.height()) * 0.95
-        self.view.resetTransform();
-        self.view.zoom_factor = ratio;
+        self.view.resetTransform()
+        self.view.zoom_factor = ratio
         self.view.scale(ratio, ratio)
         self.view.centerOn(self.view.page_item)
 
     def load_pdf(self, doc, target_page=0, mode='view', data_dict=None, **kwargs):
-        self.view.load_pdf(doc, target_page, mode, data_dict, **kwargs);
+        self.view.load_pdf(doc, target_page, mode, data_dict, **kwargs)
         self._zoom_fit()
 
     def save_current_page_state(self):

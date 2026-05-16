@@ -1,134 +1,23 @@
+# -*- coding: utf-8 -*-
 import os
 import uuid
+import copy
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-                             QGroupBox, QLineEdit, QRadioButton, QMessageBox, QFileDialog, QProgressBar, QSplitter,
-                             QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QComboBox, QAbstractItemView)
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer
+                             QGroupBox, QLineEdit, QMessageBox, QFileDialog, QProgressBar, QSplitter,
+                             QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QAbstractItemView)
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap
 import fitz
 
 from core.pdf_viewer import PDFGraphicsView
-from core.ui_components import FileListManagerWidget
+from core.ui_components import FileListManagerWidget, ExportSettingsPanel, GSSettingsPanel
 from core.utils import (detect_smart_segments, UniversalSegmentDialog, find_ghostscript,
-                        run_ghostscript, get_unique_filepath, merge_pdf_with_smart_toc,
-                        get_sub_toc, reinject_toc_after_gs,
-                        BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_RED, BTN_GRAY, BTN_ORANGE)
+                        MM_TO_PTS, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_RED, BTN_GRAY, BTN_ORANGE)
+from core.pdf_engine import merge_pdf_with_smart_toc, BaseFakeProgressWorker
 
-MM_TO_PTS = 72 / 25.4
-
-
-# ================= 1. 绝对安全的后台处理线程 (全盘读取物理文件) =================
-class ImageInserterWorker(QThread):
-    progress = pyqtSignal(int)
-    status = pyqtSignal(str)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-
-    def __init__(self, paired_data, page_configs, export_mode, output_path, prefer_filename, prefix="", suffix="",
-                 use_gs=False, gs_quality="/ebook", gs_path=None, gs_lib_path=None):
-        super().__init__()
-        self.paired_data = paired_data  # [(pdf_path, img_path), ...]
-        self.page_configs = page_configs
-        self.export_mode = export_mode
-        self.output_path = output_path
-        self.prefer_filename = prefer_filename
-        self.prefix = prefix
-        self.suffix = suffix
-        self.use_gs = use_gs
-        self.gs_quality = gs_quality
-        self.gs_path = gs_path
-        self.gs_lib_path = gs_lib_path
-
-    def _finalize_document(self, doc, final_out_path, target_toc):
-        tmp_visual = final_out_path + ".v.tmp.pdf"
-        doc.save(tmp_visual)
-        if self.use_gs and self.gs_path:
-            tmp_gs = final_out_path + ".g.tmp.pdf"
-            self.progress.emit(-1)  # 触发动画
-            try:
-                run_ghostscript(self.gs_path, self.gs_lib_path, tmp_visual, tmp_gs, quality=self.gs_quality)
-                os.remove(tmp_visual)
-                self.progress.emit(99)  # 停止动画
-                self.status.emit("✅ 压缩完成！正在回写书签...")
-                reinject_toc_after_gs(tmp_gs, target_toc)
-                os.rename(tmp_gs, final_out_path)
-            except Exception as e:
-                os.rename(tmp_visual, final_out_path)
-        else:
-            os.rename(tmp_visual, final_out_path)
-
-    def run(self):
-        try:
-            export_doc = fitz.Document() if self.export_mode == 'merged' else None
-            toc_list = []
-            global_page_counter = 0
-            total_pdfs = len(self.paired_data)
-
-            # 遍历物理文件进行组装，彻底与 UI 预览文档隔离
-            for idx, (pdf_path, _) in enumerate(self.paired_data):
-                self.status.emit(f"正在处理源文件: {os.path.basename(pdf_path)}")
-
-                doc = fitz.open(pdf_path)
-                total_local = len(doc)
-
-                for local_page_num in range(total_local):
-                    global_page_num = global_page_counter + local_page_num
-                    images_list = self.page_configs.get(global_page_num, [])
-                    page = doc[local_page_num]
-                    for img_info in images_list:
-                        img_p = img_info.get('path')
-                        if not img_p or not os.path.exists(img_p): continue
-                        rect = fitz.Rect(img_info['pdf_x'], img_info['pdf_y'],
-                                         img_info['pdf_x'] + img_info['w'] * MM_TO_PTS,
-                                         img_info['pdf_y'] + img_info['h'] * MM_TO_PTS)
-                        try:
-                            page.insert_image(rect, filename=img_p, keep_proportion=False)
-                        except Exception:
-                            pass
-
-                if self.export_mode == 'merged':
-                    merge_pdf_with_smart_toc(doc, os.path.basename(pdf_path), export_doc, toc_list,
-                                             self.prefer_filename)
-
-                elif self.export_mode == 'batch':
-                    out_name = f"{self.prefix}{os.path.splitext(os.path.basename(pdf_path))[0]}{self.suffix}.pdf"
-                    final_out_path = get_unique_filepath(self.output_path, out_name)
-                    self._finalize_document(doc, final_out_path, doc.get_toc(simple=False))
-
-                elif self.export_mode == 'split':
-                    base_name = os.path.splitext(os.path.basename(pdf_path))[0]
-                    for local_page_num in range(total_local):
-                        single_doc = fitz.Document()
-                        single_doc.insert_pdf(doc, from_page=local_page_num, to_page=local_page_num)
-                        single_toc = [[1, base_name, 1]] if self.prefer_filename else get_sub_toc(
-                            doc.get_toc(simple=False), local_page_num, local_page_num)
-                        single_doc.set_toc(single_toc)
-                        out_name = f"{self.prefix}{base_name}_第{local_page_num + 1}页{self.suffix}.pdf"
-                        final_out_path = get_unique_filepath(self.output_path, out_name)
-                        self._finalize_document(single_doc, final_out_path, single_toc)
-                        single_doc.close()
-
-                doc.close()
-                global_page_counter += total_local
-                self.progress.emit(int((idx + 1) / total_pdfs * 80))
-
-            if self.export_mode == 'merged':
-                export_doc.set_toc(toc_list)
-                final_out_path = get_unique_filepath(os.path.dirname(self.output_path),
-                                                     os.path.basename(self.output_path))
-                self._finalize_document(export_doc, final_out_path, toc_list)
-                export_doc.close()
-
-            self.progress.emit(100)
-            self.finished.emit("🎉 所有任务已完美执行完毕！")
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.error.emit(str(e))
+from .worker import ImageInserterWorker
 
 
-# ================= 2. 商业级 UI 主组件 =================
 class ImgInserterWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -139,7 +28,6 @@ class ImgInserterWidget(QWidget):
         self.original_page_img_map = {}
         self.gs_path, self.gs_lib_path = find_ghostscript()
 
-        # 💡 安全的跑马灯动画
         self.fake_timer = QTimer(self)
         self.fake_timer.timeout.connect(self._on_fake_timer_tick)
         self.fake_val = 80.0
@@ -209,7 +97,7 @@ class ImgInserterWidget(QWidget):
         btn_merge.clicked.connect(self.merge_and_build_config)
         l_left.addWidget(btn_merge)
 
-        box_left.setLayout(l_left);
+        box_left.setLayout(l_left)
         top_layout.addWidget(box_left, 1)
 
         box_right = QGroupBox("2. 智能分段设位、压缩与导出")
@@ -224,34 +112,13 @@ class ImgInserterWidget(QWidget):
         l_right.addWidget(btn_detect);
         l_right.addWidget(btn_preview)
 
-        l_right.addWidget(QLabel("导出拆分模式:"))
-        self.radio_merged = QRadioButton("合并为单一长文件")
-        self.radio_batch = QRadioButton("批量按原 PDF 独立导出")
-        self.radio_batch.setChecked(True)
-        self.radio_split = QRadioButton("拆分为单页独立文件")
-        l_right.addWidget(self.radio_merged);
-        l_right.addWidget(self.radio_batch);
-        l_right.addWidget(self.radio_split)
+        # 💡 这里也要开启 allow_overwrite
+        self.export_panel = ExportSettingsPanel("导出拆分模式:", default_mode='batch', allow_overwrite=True)
+        l_right.addWidget(self.export_panel)
 
-        hz_fix = QHBoxLayout()
-        self.input_prefix = QLineEdit();
-        self.input_prefix.setPlaceholderText("前缀")
-        self.input_suffix = QLineEdit();
-        self.input_suffix.setPlaceholderText("后缀")
-        hz_fix.addWidget(self.input_prefix);
-        hz_fix.addWidget(self.input_suffix)
-        l_right.addLayout(hz_fix);
+        self.gs_panel = GSSettingsPanel(bool(self.gs_path))
+        l_right.addWidget(self.gs_panel)
         l_right.addStretch()
-
-        hz_gs = QHBoxLayout()
-        self.chk_gs = QCheckBox("🗜️ 启用 GS 全局强力压缩")
-        self.cmb_gs_quality = QComboBox()
-        self.cmb_gs_quality.addItems(["/screen (72dpi)", "/ebook (150dpi)", "/printer (300dpi)"])
-        self.cmb_gs_quality.setCurrentIndex(1)
-        if not self.gs_path: self.chk_gs.setEnabled(False)
-        hz_gs.addWidget(self.chk_gs);
-        hz_gs.addWidget(self.cmb_gs_quality)
-        l_right.addLayout(hz_gs)
 
         self.btn_export = QPushButton("🚀 终极执行：后台批量插图 ➡️ 压缩 ➡️ 导出")
         self.btn_export.setStyleSheet(BTN_GREEN)
@@ -263,7 +130,7 @@ class ImgInserterWidget(QWidget):
         l_right.addWidget(self.lbl_status);
         l_right.addWidget(self.progress_bar)
 
-        box_right.setLayout(l_right);
+        box_right.setLayout(l_right)
         top_layout.addWidget(box_right, 1)
         splitter.addWidget(top_widget)
 
@@ -283,9 +150,8 @@ class ImgInserterWidget(QWidget):
         self.btn_recover_img.clicked.connect(self.recover_current_page_image)
 
         hz_preview_tools.addWidget(self.btn_confirm_pos);
-        hz_preview_tools.addWidget(self.btn_recover_img)
+        hz_preview_tools.addWidget(self.btn_recover_img);
         hz_preview_tools.addStretch()
-
         self.preview_view = PDFGraphicsView()
         bottom_layout.addLayout(hz_preview_tools);
         bottom_layout.addWidget(self.preview_view)
@@ -294,7 +160,6 @@ class ImgInserterWidget(QWidget):
         splitter.setSizes([450, 550])
         main_layout.addWidget(splitter)
 
-    # --- 防拉伸算法 ---
     def _calculate_initial_image_geom(self, img_path, pdf_page):
         img_w_mm, img_h_mm = 50.0, 50.0
         px = QPixmap(img_path)
@@ -309,7 +174,6 @@ class ImgInserterWidget(QWidget):
                 img_h_mm *= scale
         return img_w_mm, img_h_mm
 
-    # --- 匹配逻辑 ---
     def pair_by_name(self):
         pdfs = self.fm_pdf.get_all_filepaths()
         imgs = self.fm_img.get_all_filepaths()
@@ -380,7 +244,6 @@ class ImgInserterWidget(QWidget):
         QMessageBox.information(self, "成功",
                                 f"大纲生成成功！共计 {len(self.pdf_doc)} 页。\n请点击右侧【智能分段设位】赋予初始位置。")
 
-    # --- 智能排版 ---
     def detect_segments(self):
         if not self.pdf_doc: return QMessageBox.warning(self, "错误", "请先生成预览！")
         self.segments = detect_smart_segments(self.pdf_doc)
@@ -402,7 +265,10 @@ class ImgInserterWidget(QWidget):
         if not self.page_configs.get(target_page): return QMessageBox.warning(self, "提示",
                                                                               "当前页无图，请在列表中双击其他页！")
         self.preview_view.load_pdf(self.pdf_doc, target_page=target_page, mode='stamp_final',
-                                   data_dict=self.page_configs)
+                                   data_dict={target_page: seg_data['pos_pct']})
+
+        # 💡 [防翻页锁机制]
+        self.preview_view.set_nav_locked(True)
         self.btn_confirm_pos.show();
         self.btn_recover_img.show()
 
@@ -415,9 +281,14 @@ class ImgInserterWidget(QWidget):
             'w': new_geom['w'], 'h': new_geom['h'], 'pdf_x': new_geom['pdf_x'], 'pdf_y': new_geom['pdf_y']
         }
         self.segments[self.current_idx]['pos_set'] = True
+
+        # 💡 确保将该设置深度同步应用到这一组的所有页！
         for p in self.segments[self.current_idx]['pages']:
             if self.page_configs.get(p):
                 self.page_configs[p][0].update(self.segments[self.current_idx]['template_geom'])
+
+        # 💡 解除防翻页锁
+        self.preview_view.set_nav_locked(False)
         self.btn_confirm_pos.hide();
         self.btn_recover_img.hide()
         self.dialog.refresh_table();
@@ -425,6 +296,7 @@ class ImgInserterWidget(QWidget):
 
     def enter_final_preview(self):
         if not self.pdf_doc: return QMessageBox.warning(self, "错误", "缺少PDF数据。")
+        self.preview_view.set_nav_locked(False)
         self.preview_view.load_pdf(self.pdf_doc, mode='stamp_final', data_dict=self.page_configs)
         self.btn_confirm_pos.hide();
         self.btn_recover_img.show()
@@ -455,7 +327,6 @@ class ImgInserterWidget(QWidget):
         self.preview_view.load_pdf(self.pdf_doc, target_page=curr_page, mode='stamp_final', data_dict=self.page_configs)
         QMessageBox.information(self, "找回成功", "已完美恢复该页面专属配对图片！")
 
-    # ================= UI 槽函数与导出 =================
     def _on_fake_timer_tick(self):
         if self.fake_val < 98.0:
             self.fake_val += (99.0 - self.fake_val) * 0.05
@@ -464,7 +335,7 @@ class ImgInserterWidget(QWidget):
         self.fake_msg_idx += 1
 
     def _on_worker_progress(self, val):
-        if val == -1:
+        if val == BaseFakeProgressWorker.TRIGGER_FAKE_PROGRESS:
             self.fake_val = 80.0
             self.fake_msg_idx = 0
             self._on_fake_timer_tick()
@@ -495,26 +366,33 @@ class ImgInserterWidget(QWidget):
     def start_export(self):
         if not self.paired_data: return QMessageBox.warning(self, "提示", "未检测到数据！")
         self.preview_view.save_current_page_state()
+        self.page_configs.update(copy.deepcopy(self.preview_view.page_data_dict))
 
-        mode = 'merged' if self.radio_merged.isChecked() else ('batch' if self.radio_batch.isChecked() else 'split')
-        if mode == 'merged':
+        # 💡 [核心修改] 处理覆盖警告
+        export_cfg = self.export_panel.get_config()
+        gs_cfg = self.gs_panel.get_config()
+
+        if export_cfg['mode'] == 'merged':
             path, _ = QFileDialog.getSaveFileName(self, "保存", "合并插图图纸.pdf", "PDF (*.pdf)")
             if not path: return
-        else:
+        elif export_cfg['mode'] in ['batch', 'split']:
             path = QFileDialog.getExistingDirectory(self, "选择保存目录")
             if not path: return
+        elif export_cfg['mode'] == 'overwrite':
+            reply = QMessageBox.question(self, "高危操作确认",
+                                         "【原文件直接覆盖】模式将会彻底替换您的原始 PDF 文件且无法恢复！\n强烈建议提前做好备份。\n\n是否确定继续？",
+                                         QMessageBox.Yes | QMessageBox.No)
+            if reply != QMessageBox.Yes: return
+            path = ""
 
-        self.btn_export.setEnabled(False)  # 💡 禁用按钮防双击
+        self.btn_export.setEnabled(False)
         self.worker = ImageInserterWorker(
-            paired_data=self.paired_data,  # 💡 将源文件列表直接丢给 Worker
+            paired_data=self.paired_data,
             page_configs=self.page_configs,
-            export_mode=mode,
+            export_config=export_cfg,
+            gs_config=gs_cfg,
             output_path=path,
             prefer_filename=self.chk_toc_strategy.isChecked(),
-            prefix=self.input_prefix.text(),
-            suffix=self.input_suffix.text(),
-            use_gs=self.chk_gs.isChecked(),
-            gs_quality=self.cmb_gs_quality.currentText().split(" ")[0],
             gs_path=self.gs_path,
             gs_lib_path=self.gs_lib_path
         )

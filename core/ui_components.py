@@ -1,5 +1,8 @@
+# -*- coding: utf-8 -*-
 import os
-from PyQt5.QtWidgets import QListWidget, QAbstractItemView, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog
+from PyQt5.QtWidgets import (QListWidget, QAbstractItemView, QWidget, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QFileDialog, QGroupBox, QRadioButton, QLineEdit,
+                             QCheckBox, QComboBox, QLabel)
 from PyQt5.QtCore import Qt, pyqtSignal
 
 
@@ -27,7 +30,7 @@ class DropListWidget(QListWidget):
 
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls() or event.source() == self:
-            event.setDropAction(Qt.MoveAction);
+            event.setDropAction(Qt.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -43,7 +46,7 @@ class DropListWidget(QListWidget):
                     path = url.toLocalFile()
                     ext = os.path.splitext(path)[1].lower()
                     if (not self.accept_exts or ext in self.accept_exts) and path not in existing_files:
-                        links.append(path);
+                        links.append(path)
                         self.addItem(path)
             if links: self.filesDropped.emit(links)
         else:
@@ -71,8 +74,8 @@ class FileListManagerWidget(QWidget):
         btn_clear.setStyleSheet("background-color: #95A5A6; color: white; border-radius: 4px; padding: 6px;")
         btn_clear.clicked.connect(self.clear_all)
 
-        btn_layout.addWidget(btn_add);
-        btn_layout.addWidget(btn_del);
+        btn_layout.addWidget(btn_add)
+        btn_layout.addWidget(btn_del)
         btn_layout.addWidget(btn_clear)
         layout.addLayout(btn_layout)
 
@@ -82,14 +85,14 @@ class FileListManagerWidget(QWidget):
         btn_sort_az = QPushButton("🔤 正序 (A-Z)")
         btn_sort_za = QPushButton("🔤 倒序 (Z-A)")
 
-        btn_up.clicked.connect(self.move_up);
+        btn_up.clicked.connect(self.move_up)
         btn_down.clicked.connect(self.move_down)
         btn_sort_az.clicked.connect(lambda: self.list_widget.sortItems(Qt.AscendingOrder))
         btn_sort_za.clicked.connect(lambda: self.list_widget.sortItems(Qt.DescendingOrder))
 
         tool_style = "background-color: #ECF0F1; color: #2C3E50; border: 1px solid #BDC3C7; border-radius: 4px; padding: 4px;"
         for btn in [btn_up, btn_down, btn_sort_az, btn_sort_za]:
-            btn.setStyleSheet(tool_style);
+            btn.setStyleSheet(tool_style)
             tool_layout.addWidget(btn)
         layout.addLayout(tool_layout)
 
@@ -134,3 +137,90 @@ class FileListManagerWidget(QWidget):
 
     def count(self):
         return self.list_widget.count()
+
+
+# ================= 导出的高级配置面板 =================
+class ExportSettingsPanel(QGroupBox):
+    def __init__(self, title="导出拆分模式:", default_mode='batch', allow_overwrite=False, parent=None):
+        super().__init__(title, parent)
+        layout = QVBoxLayout(self)
+
+        hz_mode = QHBoxLayout()
+        self.radio_merged = QRadioButton("合并为单一文件")
+        self.radio_batch = QRadioButton("按原文件独立导出")
+        self.radio_split = QRadioButton("拆分为单页独立")
+
+        if default_mode == 'merged':
+            self.radio_merged.setChecked(True)
+        elif default_mode == 'split':
+            self.radio_split.setChecked(True)
+        else:
+            self.radio_batch.setChecked(True)
+
+        hz_mode.addWidget(self.radio_merged)
+        hz_mode.addWidget(self.radio_batch)
+        hz_mode.addWidget(self.radio_split)
+
+        # 💡 [核心新增] 如果允许覆盖模式，添加专属单选框
+        self.radio_overwrite = None
+        if allow_overwrite:
+            self.radio_overwrite = QRadioButton("直接覆盖原文件")
+            self.radio_overwrite.setStyleSheet("color: #C0392B; font-weight: bold;")
+            hz_mode.addWidget(self.radio_overwrite)
+
+        layout.addLayout(hz_mode)
+
+        hz_fix = QHBoxLayout()
+        self.input_prefix = QLineEdit()
+        self.input_prefix.setPlaceholderText("导出的文件前缀 (选填)")
+        self.input_suffix = QLineEdit()
+        self.input_suffix.setPlaceholderText("导出的文件后缀 (选填)")
+        hz_fix.addWidget(self.input_prefix)
+        hz_fix.addWidget(self.input_suffix)
+        layout.addLayout(hz_fix)
+
+        if allow_overwrite:
+            self.radio_overwrite.toggled.connect(lambda checked: self.input_prefix.setEnabled(not checked))
+            self.radio_overwrite.toggled.connect(lambda checked: self.input_suffix.setEnabled(not checked))
+
+    def get_config(self):
+        mode = 'batch'
+        if self.radio_merged.isChecked():
+            mode = 'merged'
+        elif self.radio_split.isChecked():
+            mode = 'split'
+        elif self.radio_overwrite and self.radio_overwrite.isChecked():
+            mode = 'overwrite'
+
+        return {
+            'mode': mode,
+            'prefix': self.input_prefix.text(),
+            'suffix': self.input_suffix.text()
+        }
+
+
+# ================= 通用的 Ghostscript 压缩设置面板 =================
+class GSSettingsPanel(QWidget):
+    def __init__(self, gs_path_exists=True, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.chk_gs = QCheckBox("🗜️ 启用 GS 二次全局强力压缩")
+        self.cmb_gs_quality = QComboBox()
+        self.cmb_gs_quality.addItems(
+            ["/screen (极致压缩 72dpi)", "/ebook (推荐平衡 150dpi)", "/printer (高清画质 300dpi)"])
+        self.cmb_gs_quality.setCurrentIndex(1)
+
+        if not gs_path_exists:
+            self.chk_gs.setEnabled(False)
+            self.chk_gs.setText("🗜️ 启用 GS 强力压缩 (未检测到引擎)")
+
+        layout.addWidget(self.chk_gs)
+        layout.addWidget(self.cmb_gs_quality)
+
+    def get_config(self):
+        return {
+            'use_gs': self.chk_gs.isChecked(),
+            'quality': self.cmb_gs_quality.currentText().split(" ")[0]
+        }
