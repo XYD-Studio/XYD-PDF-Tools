@@ -171,7 +171,7 @@ GLOBAL_QSS = """
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF聚合工作站 V2.2.1")
+        self.setWindowTitle("PDF聚合工作站 V2.2.2")
         self.resize(1400, 900)
 
         icon_path = get_base_path('logo.ico')
