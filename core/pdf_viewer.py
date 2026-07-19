@@ -13,6 +13,45 @@ MM_TO_PTS = 72 / 25.4
 RENDER_SCALE = 2.0
 
 
+def prepare_stamp_asset(parent, path, pdf_page=None):
+    """Load a screen preview and metadata without rasterizing PDF export content."""
+    is_pdf = os.path.splitext(path)[1].lower() == ".pdf"
+    if not is_pdf:
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            raise ValueError("无法读取所选图片")
+        return {
+            "asset_type": "image",
+            "pdf_page": 0,
+            "pixmap": pixmap,
+            "aspect_ratio": pixmap.width() / max(1, pixmap.height()),
+        }
+
+    doc = fitz.open(path)
+    try:
+        if len(doc) == 0:
+            raise ValueError("所选 PDF 没有页面")
+        if pdf_page is None and len(doc) > 1:
+            selected, ok = QInputDialog.getInt(parent, "选择 PDF 素材页", "页码:", 1, 1, len(doc), 1)
+            if not ok:
+                return None
+            pdf_page = selected - 1
+        pdf_page = max(0, min(int(pdf_page or 0), len(doc) - 1))
+        page = doc[pdf_page]
+        scale = min(2.0, 1200.0 / max(page.rect.width, page.rect.height))
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=True)
+        image_format = QImage.Format_RGBA8888 if pix.alpha else QImage.Format_RGB888
+        image = QImage(pix.samples, pix.width, pix.height, pix.stride, image_format).copy()
+        return {
+            "asset_type": "pdf",
+            "pdf_page": pdf_page,
+            "pixmap": QPixmap.fromImage(image),
+            "aspect_ratio": page.rect.width / max(1, page.rect.height),
+        }
+    finally:
+        doc.close()
+
+
 class ResizableRectItem(QGraphicsRectItem):
     def __init__(self, w, h, name, color):
         super().__init__(0, 0, w, h)
@@ -71,8 +110,13 @@ class ResizableStampItem(QGraphicsRectItem):
         self.setZValue(999)
         self.orig_pixmap = QPixmap()
         try:
-            with open(stamp_info.get('path', ''), 'rb') as f:
-                self.orig_pixmap.loadFromData(f.read())
+            asset = prepare_stamp_asset(
+                view,
+                stamp_info.get('path', ''),
+                stamp_info.get('pdf_page', 0) if stamp_info.get('asset_type') == 'pdf' else None,
+            )
+            if asset:
+                self.orig_pixmap = asset['pixmap']
         except Exception:
             self.orig_pixmap = QPixmap(int(w_scene), int(h_scene))
             self.orig_pixmap.fill(Qt.lightGray)
@@ -158,21 +202,30 @@ class ResizableStampItem(QGraphicsRectItem):
         if action == action_copy:
             self.view.duplicate_stamp(self.stamp_info)
         elif action == action_replace:
-            file_path, _ = QFileDialog.getOpenFileName(None, "选择要替换的图片", "",
-                                                       "Images (*.png *.jpg *.jpeg *.bmp)")
+            file_path, _ = QFileDialog.getOpenFileName(None, "选择替换素材", "",
+                                                       "图章素材 (*.png *.jpg *.jpeg *.bmp *.pdf)")
             if file_path:
-                new_pixmap = QPixmap(file_path)
-                if not new_pixmap.isNull():
+                try:
+                    asset = prepare_stamp_asset(self.view, file_path)
+                except Exception:
+                    asset = None
+                if asset:
+                    new_pixmap = asset['pixmap']
                     max_dim = max(self.stamp_info['w'], self.stamp_info['h'])
-                    new_ratio = new_pixmap.width() / new_pixmap.height() if new_pixmap.height() != 0 else 1.0
+                    new_ratio = asset['aspect_ratio']
                     if new_pixmap.width() >= new_pixmap.height():
                         final_w, final_h = max_dim, max_dim / new_ratio
                     else:
                         final_h, final_w = max_dim, max_dim * new_ratio
-                    self.stamp_info.update(
-                        {'path': file_path, 'w': final_w, 'h': final_h, 'name': os.path.basename(file_path)})
-                    with open(file_path, 'rb') as f:
-                        self.orig_pixmap.loadFromData(f.read())
+                    self.stamp_info.update({
+                        'path': file_path,
+                        'w': final_w,
+                        'h': final_h,
+                        'name': os.path.basename(file_path),
+                        'asset_type': asset['asset_type'],
+                        'pdf_page': asset['pdf_page'],
+                    })
+                    self.orig_pixmap = new_pixmap
                     w_scene = final_w * MM_TO_PTS * RENDER_SCALE
                     h_scene = final_h * MM_TO_PTS * RENDER_SCALE
                     self.setRect(self.rect().left(), self.rect().top(), w_scene, h_scene)

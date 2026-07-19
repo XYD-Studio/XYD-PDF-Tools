@@ -6,10 +6,9 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLa
                              QGroupBox, QLineEdit, QMessageBox, QFileDialog, QProgressBar, QSplitter,
                              QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QAbstractItemView)
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPixmap
 import fitz
 
-from core.pdf_viewer import PDFGraphicsView
+from core.pdf_viewer import PDFGraphicsView, prepare_stamp_asset
 from core.ui_components import FileListManagerWidget, ExportSettingsPanel, GSSettingsPanel
 from core.utils import (detect_smart_segments, UniversalSegmentDialog, find_ghostscript,
                         MM_TO_PTS, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_RED, BTN_GRAY, BTN_ORANGE)
@@ -60,8 +59,8 @@ class ImgInserterWidget(QWidget):
         hz_files.addLayout(v_pdf)
 
         v_img = QVBoxLayout()
-        v_img.addWidget(QLabel("🖼️ 待插入图片池 (二维码/防伪图等)"))
-        self.fm_img = FileListManagerWidget(accept_exts=['.png', '.jpg', '.jpeg'], title_desc="Images")
+        v_img.addWidget(QLabel("🖼️ 待插入素材池 (图片或矢量 PDF)"))
+        self.fm_img = FileListManagerWidget(accept_exts=['.png', '.jpg', '.jpeg', '.bmp', '.pdf'], title_desc="素材")
         v_img.addWidget(self.fm_img)
         hz_files.addLayout(v_img)
         l_left.addLayout(hz_files, 1)
@@ -78,7 +77,7 @@ class ImgInserterWidget(QWidget):
         l_left.addLayout(hz_pair)
 
         self.table_pair = QTableWidget(0, 2)
-        self.table_pair.setHorizontalHeaderLabels(["目标 PDF 文件", "专属配对图片"])
+        self.table_pair.setHorizontalHeaderLabels(["目标 PDF 文件", "专属配对素材"])
         self.table_pair.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_pair.setSelectionBehavior(QAbstractItemView.SelectRows)
         l_left.addWidget(self.table_pair, 1)
@@ -160,18 +159,30 @@ class ImgInserterWidget(QWidget):
         splitter.setSizes([450, 550])
         main_layout.addWidget(splitter)
 
-    def _calculate_initial_image_geom(self, img_path, pdf_page):
-        img_w_mm, img_h_mm = 50.0, 50.0
-        px = QPixmap(img_path)
-        if not px.isNull() and px.width() > 0 and px.height() > 0:
-            img_w_mm = px.width() / MM_TO_PTS
-            img_h_mm = px.height() / MM_TO_PTS
-            pdf_w_mm = pdf_page.rect.width / MM_TO_PTS
-            pdf_h_mm = pdf_page.rect.height / MM_TO_PTS
-            if img_w_mm > pdf_w_mm or img_h_mm > pdf_h_mm:
-                scale = min(pdf_w_mm / img_w_mm, pdf_h_mm / img_h_mm) * 0.9
-                img_w_mm *= scale
-                img_h_mm *= scale
+    def _prepare_material(self, path, cache):
+        if path in cache:
+            return cache[path]
+        asset = prepare_stamp_asset(self, path)
+        if not asset:
+            return None
+        material = {
+            'path': path,
+            'asset_type': asset['asset_type'],
+            'pdf_page': asset['pdf_page'],
+            'aspect_ratio': asset['aspect_ratio'],
+        }
+        cache[path] = material
+        return material
+
+    def _calculate_initial_image_geom(self, material, pdf_page):
+        pdf_w_mm = pdf_page.rect.width / MM_TO_PTS
+        pdf_h_mm = pdf_page.rect.height / MM_TO_PTS
+        aspect = max(0.01, float(material.get('aspect_ratio', 1.0)))
+        img_w_mm = min(50.0, pdf_w_mm * 0.4)
+        img_h_mm = img_w_mm / aspect
+        if img_h_mm > pdf_h_mm * 0.9:
+            img_h_mm = pdf_h_mm * 0.9
+            img_w_mm = img_h_mm * aspect
         return img_w_mm, img_h_mm
 
     def pair_by_name(self):
@@ -180,11 +191,15 @@ class ImgInserterWidget(QWidget):
         if not pdfs or not imgs: return QMessageBox.warning(self, "提示", "PDF 和图片池均不能为空！")
         self.paired_data.clear()
         img_dict = {os.path.splitext(os.path.basename(p))[0]: p for p in imgs}
+        asset_cache = {}
         matched_count = 0
         for pdf in pdfs:
             pdf_name = os.path.splitext(os.path.basename(pdf))[0]
             if pdf_name in img_dict:
-                self.paired_data.append((pdf, img_dict[pdf_name]))
+                material = self._prepare_material(img_dict[pdf_name], asset_cache)
+                if material is None:
+                    return
+                self.paired_data.append((pdf, material))
                 matched_count += 1
             else:
                 self.paired_data.append((pdf, None))
@@ -196,19 +211,23 @@ class ImgInserterWidget(QWidget):
         imgs = self.fm_img.get_all_filepaths()
         if not pdfs or not imgs: return QMessageBox.warning(self, "提示", "PDF 和图片池均不能为空！")
         self.paired_data.clear()
+        asset_cache = {}
         for i, pdf in enumerate(pdfs):
-            img_path = imgs[i] if i < len(imgs) else None
-            self.paired_data.append((pdf, img_path))
+            material = self._prepare_material(imgs[i], asset_cache) if i < len(imgs) else None
+            if i < len(imgs) and material is None:
+                return
+            self.paired_data.append((pdf, material))
         self.refresh_table()
         if len(pdfs) != len(imgs): QMessageBox.warning(self, "数量不一致",
                                                        f"PDF数量({len(pdfs)}) 与 图片数量({len(imgs)}) 不匹配！")
 
     def refresh_table(self):
         self.table_pair.setRowCount(len(self.paired_data))
-        for i, (pdf, img) in enumerate(self.paired_data):
+        for i, (pdf, material) in enumerate(self.paired_data):
             self.table_pair.setItem(i, 0, QTableWidgetItem(os.path.basename(pdf)))
-            item_img = QTableWidgetItem(os.path.basename(img) if img else "⚠️ 未匹配")
-            if not img: item_img.setForeground(Qt.red)
+            material_path = material['path'] if material else None
+            item_img = QTableWidgetItem(os.path.basename(material_path) if material_path else "⚠️ 未匹配")
+            if not material_path: item_img.setForeground(Qt.red)
             self.table_pair.setItem(i, 1, item_img)
 
     def merge_and_build_config(self):
@@ -221,17 +240,19 @@ class ImgInserterWidget(QWidget):
         prefer_filename = self.chk_toc_strategy.isChecked()
         global_page_counter = 0
 
-        for pdf_path, img_path in self.paired_data:
+        for pdf_path, material in self.paired_data:
             doc = fitz.open(pdf_path)
             for local_idx in range(len(doc)):
-                if img_path and (apply_all or local_idx == 0) and os.path.exists(img_path):
-                    img_w, img_h = self._calculate_initial_image_geom(img_path, doc[local_idx])
+                material_path = material['path'] if material else None
+                if material_path and (apply_all or local_idx == 0) and os.path.exists(material_path):
+                    img_w, img_h = self._calculate_initial_image_geom(material, doc[local_idx])
                     self.page_configs[global_page_counter] = [{
-                        'id': str(uuid.uuid4()), 'name': os.path.basename(img_path),
-                        'path': img_path, 'w': img_w, 'h': img_h,
-                        'pdf_x': 10.0, 'pdf_y': 10.0, 'angle': 0, 'lock_ratio': True
+                        'id': str(uuid.uuid4()), 'name': os.path.basename(material_path),
+                        'path': material_path, 'w': img_w, 'h': img_h,
+                        'pdf_x': 10.0, 'pdf_y': 10.0, 'angle': 0, 'lock_ratio': True,
+                        'asset_type': material['asset_type'], 'pdf_page': material['pdf_page'],
                     }]
-                    self.original_page_img_map[global_page_counter] = img_path
+                    self.original_page_img_map[global_page_counter] = dict(material)
                 else:
                     self.page_configs[global_page_counter] = []
                 global_page_counter += 1
@@ -307,7 +328,8 @@ class ImgInserterWidget(QWidget):
         curr_page = getattr(self.preview_view, 'current_page', -1)
         if curr_page < 0: return QMessageBox.warning(self, "提示", "请先定位到具体的页面。")
 
-        img_path = self.original_page_img_map.get(curr_page)
+        material = self.original_page_img_map.get(curr_page)
+        img_path = material['path'] if material else None
         if not img_path or not os.path.exists(img_path): return QMessageBox.warning(self, "无法找回",
                                                                                     "该页面原本就无关联图片！")
 
@@ -315,11 +337,12 @@ class ImgInserterWidget(QWidget):
         if len(self.page_configs.get(curr_page, [])) > 0: return QMessageBox.information(self, "提示",
                                                                                          "当前页面已有图！若想换图，请右键选【替换图像】。")
 
-        img_w, img_h = self._calculate_initial_image_geom(img_path, self.pdf_doc[curr_page])
+        img_w, img_h = self._calculate_initial_image_geom(material, self.pdf_doc[curr_page])
         new_stamp = {
             'id': str(uuid.uuid4()), 'name': os.path.basename(img_path),
             'path': img_path, 'w': img_w, 'h': img_h,
-            'pdf_x': 10.0, 'pdf_y': 10.0, 'angle': 0, 'lock_ratio': True
+            'pdf_x': 10.0, 'pdf_y': 10.0, 'angle': 0, 'lock_ratio': True,
+            'asset_type': material['asset_type'], 'pdf_page': material['pdf_page'],
         }
 
         if curr_page not in self.page_configs: self.page_configs[curr_page] = []

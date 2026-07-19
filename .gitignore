@@ -20,3 +20,5 @@ __pycache__/
 *.log
 #其他文件
 License.txt
+
+.codegraph/

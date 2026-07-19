@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
+import os
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
                              QGroupBox, QComboBox, QFileDialog, QMessageBox, QProgressBar, QCheckBox, QLineEdit,
                              QDialog, QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
                              QDialogButtonBox)
 from core.ui_components import FileListManagerWidget
+from core.utils import first_input_directory, suggested_output_path
 from .worker import ToolkitWorker
 
 
@@ -102,7 +104,7 @@ class ToolkitWidget(QWidget):
         hl = QHBoxLayout()
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems([
-            "多图转PDF", "多个PDF合并", "PDF拆分为单页",
+            "多图转PDF", "多个PDF合并", "PDF交叉合并", "PDF拆分为单页",
             "按书签拆分PDF为单页", "PDF转图片型PDF", "PDF批量导出图片"
         ])
         self.cmb_mode.currentTextChanged.connect(self.update_ui_state)
@@ -147,6 +149,48 @@ class ToolkitWidget(QWidget):
         self.box_params.setLayout(pl)
         layout.addWidget(self.box_params)
 
+        self.box_interleave = QGroupBox("2.1 交叉合并参数")
+        il = QVBoxLayout()
+
+        row_rotate = QHBoxLayout()
+        row_rotate.addWidget(QLabel("A PDF 批量旋转:"))
+        self.cmb_rotate_a = QComboBox()
+        self.cmb_rotate_a.addItems(["0°", "90°", "180°", "270°"])
+        row_rotate.addWidget(self.cmb_rotate_a)
+
+        row_rotate.addWidget(QLabel("B PDF 批量旋转:"))
+        self.cmb_rotate_b = QComboBox()
+        self.cmb_rotate_b.addItems(["0°", "90°", "180°", "270°"])
+        row_rotate.addWidget(self.cmb_rotate_b)
+
+        self.chk_reverse_b = QCheckBox("B PDF 倒序参与交叉")
+        row_rotate.addWidget(self.chk_reverse_b)
+        row_rotate.addStretch(1)
+        il.addLayout(row_rotate)
+
+        row_blank = QHBoxLayout()
+        self.chk_fill_blank = QCheckBox("页数不一致时自动补空白页")
+        self.chk_fill_blank.setChecked(True)
+        row_blank.addWidget(self.chk_fill_blank)
+
+        row_blank.addWidget(QLabel("A侧预留空白页位:"))
+        self.entry_reserved_a = QLineEdit()
+        self.entry_reserved_a.setPlaceholderText("例如: 3, 8-10")
+        row_blank.addWidget(self.entry_reserved_a)
+
+        row_blank.addWidget(QLabel("B侧预留空白页位:"))
+        self.entry_reserved_b = QLineEdit()
+        self.entry_reserved_b.setPlaceholderText("例如: 2, 6")
+        row_blank.addWidget(self.entry_reserved_b)
+        il.addLayout(row_blank)
+
+        tip = QLabel("文件列表中第1个PDF作为A，第2个PDF作为B；输出顺序为 A1、B1、A2、B2。预留页位会插入空白页且不消耗原PDF页面。")
+        tip.setStyleSheet("color: #7F8C8D;")
+        il.addWidget(tip)
+
+        self.box_interleave.setLayout(il)
+        layout.addWidget(self.box_interleave)
+
         self.file_manager = FileListManagerWidget(accept_exts=['.pdf', '.jpg', '.png', '.jpeg'], title_desc="Files")
         layout.addWidget(self.file_manager)
 
@@ -171,6 +215,7 @@ class ToolkitWidget(QWidget):
         fmt = self.cmb_fmt.currentText()
 
         self.btn_config_split.setVisible(mode == "按书签拆分PDF为单页")
+        self.box_interleave.setVisible(mode == "PDF交叉合并")
 
         if mode == "PDF批量导出图片":
             self.box_params.setEnabled(True)
@@ -191,6 +236,13 @@ class ToolkitWidget(QWidget):
             self.chk_trans.setEnabled(False)
             self.chk_trans.setChecked(False)
 
+        elif mode == "PDF交叉合并":
+            self.box_params.setEnabled(False)
+            self.entry_dpi.setEnabled(False)
+            self.cmb_fmt.setEnabled(False)
+            self.chk_trans.setEnabled(False)
+            self.chk_trans.setChecked(False)
+
         else:
             self.box_params.setEnabled(False)
             self.entry_dpi.setEnabled(False)
@@ -203,15 +255,36 @@ class ToolkitWidget(QWidget):
         if dialog.exec_() == QDialog.Accepted:
             self.split_bookmark_config = dialog.get_config()
 
+    def get_interleave_config(self):
+        return {
+            'rotate_a': int(self.cmb_rotate_a.currentText().replace("°", "")),
+            'rotate_b': int(self.cmb_rotate_b.currentText().replace("°", "")),
+            'reverse_b': self.chk_reverse_b.isChecked(),
+            'fill_blank': self.chk_fill_blank.isChecked(),
+            'reserved_a': self.entry_reserved_a.text(),
+            'reserved_b': self.entry_reserved_b.text()
+        }
+
     def run_tool(self):
         if self.file_manager.count() == 0: return QMessageBox.warning(self, "提示", "请先添加文件")
         mode = self.cmb_mode.currentText()
+        paths = self.file_manager.get_all_filepaths()
+        pdf_paths = [p for p in paths if p.lower().endswith('.pdf')]
 
-        if "拆分" in mode or "导出图片" in mode:
-            out_dir = QFileDialog.getExistingDirectory(self, "选择保存目录")
+        if mode == "PDF转图片型PDF" and len(pdf_paths) > 1:
+            out_dir = QFileDialog.getExistingDirectory(self, "选择保存目录", first_input_directory(pdf_paths))
+            if not out_dir: return
+        elif "拆分" in mode or "导出图片" in mode:
+            out_dir = QFileDialog.getExistingDirectory(self, "选择保存目录", first_input_directory(paths))
             if not out_dir: return
         else:
-            out_dir, _ = QFileDialog.getSaveFileName(self, "保存为", "工具箱输出.pdf", "PDF (*.pdf)")
+            if mode == "PDF转图片型PDF" and pdf_paths:
+                base = os.path.splitext(os.path.basename(pdf_paths[0]))[0]
+                filename = f"{base}_图片型.pdf"
+            else:
+                filename = "工具箱输出.pdf"
+            initial = suggested_output_path(paths, filename)
+            out_dir, _ = QFileDialog.getSaveFileName(self, "保存为", initial, "PDF (*.pdf)")
             if not out_dir: return
 
         try:
@@ -219,11 +292,18 @@ class ToolkitWidget(QWidget):
         except:
             dpi = 200.0
 
-        paths = self.file_manager.get_all_filepaths()
+        interleave_config = {}
+        if mode == "PDF交叉合并":
+            pdf_paths = [p for p in paths if p.lower().endswith('.pdf')]
+            if len(pdf_paths) != 2:
+                return QMessageBox.warning(self, "提示", "PDF交叉合并需要且仅需要添加两个PDF文件，第1个作为A，第2个作为B。")
+            paths = pdf_paths
+            interleave_config = self.get_interleave_config()
+
         self.btn_run.setEnabled(False)
 
         self.worker = ToolkitWorker(paths, mode, out_dir, dpi, self.cmb_fmt.currentText(), self.chk_trans.isChecked(),
-                                    self.split_bookmark_config)
+                                    self.split_bookmark_config, interleave_config)
         self.worker.progress.connect(lambda v, txt: (self.progress.setValue(v), self.lbl_status.setText(txt)))
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(lambda e: (QMessageBox.critical(self, "错误", e), self.btn_run.setEnabled(True)))

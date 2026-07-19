@@ -17,6 +17,7 @@ from modules.mod_help import HelpWidget            # <--- 导入独立的帮助�
 from modules.mod_img2dxf import ImgToDxfWidget     # <--- 导入即将新增的 DXF 模块
 from core.utils import get_base_path               # <--- 统一路径管理
 from modules.mod_img_inserter import ImgInserterWidget
+from modules.mod_pdf_organizer import PDFOrganizerWidget
 
 try:
     site_packages = site.getsitepackages()[0]
@@ -27,7 +28,7 @@ except Exception:
     pass
 
 try:
-    myappid = 'mycompany.pdf_master_pro.v6.0'
+    myappid = 'xyd.pdf_tools_pro.v4.0'
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 except Exception:
     pass
@@ -171,7 +172,7 @@ GLOBAL_QSS = """
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF聚合工作站 V3.2")
+        self.setWindowTitle("PDF聚合工作站 V4.0.0")
         self.resize(1400, 900)
 
         icon_path = get_base_path('logo.ico')
@@ -195,6 +196,7 @@ class MainWindow(QMainWindow):
             "🛠️  PDF综合工具箱",
             "📐  线稿智能转DXF",
             "🖼️  批量一对一加图",
+            "📑  PDF页面组织与阅读",
             "❓  操作指南与帮助"
         ])
         self.menu_list.currentRowChanged.connect(self.switch_tab)
@@ -235,6 +237,7 @@ class MainWindow(QMainWindow):
         self.page_tool = ToolkitWidget()
         self.page_dxf = ImgToDxfWidget()   # <--- 实例化 DXF 模块
         self.page_inserter = ImgInserterWidget()
+        self.page_organizer = PDFOrganizerWidget()
         self.page_help = HelpWidget()
 
         self.stack.addWidget(self.page_stamp)
@@ -244,6 +247,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.page_tool)
         self.stack.addWidget(self.page_dxf)  # <--- 加入 Stack
         self.stack.addWidget(self.page_inserter)
+        self.stack.addWidget(self.page_organizer)
         self.stack.addWidget(self.page_help)
 
         layout.addWidget(self.menu_list)
@@ -257,6 +261,12 @@ class MainWindow(QMainWindow):
     def handle_link_click(self, url):
         """处理帮助文档中的链接点击事件"""
         webbrowser.open(url.toString())
+
+    def closeEvent(self, event):
+        if self.page_organizer.can_close():
+            event.accept()
+        else:
+            event.ignore()
 
 
 
@@ -335,7 +345,7 @@ if __name__ == "__main__":
             # 副标题
             painter.setPen(QColor(80, 110, 150))
             painter.setFont(QFont("Microsoft YaHei", 12))
-            painter.drawText(0, 25, self.width, self.height, Qt.AlignCenter, "V 3.2 Professional Edition")
+            painter.drawText(0, 25, self.width, self.height, Qt.AlignCenter, "V 4.0.0 Professional Edition")
             painter.setPen(QColor(100, 120, 150))
             painter.setFont(QFont("Microsoft YaHei", 11))
             painter.drawText(0, 55, self.width, self.height, Qt.AlignCenter, "玄宇绘世设计工作室出品")
@@ -376,7 +386,7 @@ if __name__ == "__main__":
             # 版本号
             painter.setPen(QColor(70, 90, 120, 150))
             painter.setFont(QFont("Microsoft YaHei", 8))
-            painter.drawText(self.width - 95, self.height - 15, "Build 2026.04")
+            painter.drawText(self.width - 95, self.height - 15, "Build 2026.07")
 
             painter.end()
             self.setPixmap(pixmap)

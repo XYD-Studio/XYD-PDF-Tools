@@ -1,7 +1,6 @@
 import os
 import sys
 import shutil
-import subprocess
 import fitz
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem,
                              QPushButton, QHBoxLayout, QHeaderView, QMessageBox, QInputDialog)
@@ -26,6 +25,15 @@ def get_base_path(relative_path=""):
     return os.path.join(base_path, relative_path)
 
 
+def first_input_directory(paths):
+    paths = list(paths or [])
+    return os.path.dirname(os.path.abspath(paths[0])) if paths else os.path.expanduser("~")
+
+
+def suggested_output_path(paths, filename):
+    return os.path.join(first_input_directory(paths), filename)
+
+
 def find_ghostscript():
     base_path = get_base_path()
     bundled_gs = os.path.join(base_path, "gs_portable", "bin", "gswin64c.exe")
@@ -46,12 +54,8 @@ def find_ghostscript():
 
 
 def run_ghostscript(gs_path, gs_lib_path, input_pdf, output_pdf, quality="/ebook"):
-    """纯净阻塞调用引擎，绝不跨线程传递信号"""
-    cmd = [gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4", f"-dPDFSETTINGS={quality}",
-           "-dNOPAUSE", "-dQUIET", "-dBATCH"]
-    if gs_lib_path: cmd.insert(1, f"-I{gs_lib_path}")
-    cmd.extend([f"-sOutputFile={output_pdf}", input_pdf])
-    subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+    from core.pdf_engine import run_ghostscript as engine_run_ghostscript
+    return engine_run_ghostscript(gs_path, gs_lib_path, input_pdf, output_pdf, quality)
 
 
 def get_unique_filepath(directory, desired_filename):

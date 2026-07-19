@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLa
                              QGroupBox, QComboBox, QRadioButton, QLineEdit, QFileDialog, QMessageBox, QProgressBar)
 
 from core.ui_components import FileListManagerWidget, ExportSettingsPanel, GSSettingsPanel
-from core.utils import find_ghostscript
+from core.utils import find_ghostscript, first_input_directory, suggested_output_path
 # 引入独立的 Worker
 from .worker import PDFCompressWorker, ImgCompressWorker
 
@@ -119,10 +119,11 @@ class CompressorWidget(QWidget):
         gs_cfg = self.gs_panel.get_config()
 
         if export_cfg['mode'] == 'merged':
-            save_path, _ = QFileDialog.getSaveFileName(self, "保存合并文件", "合并压缩文件.pdf", "PDF (*.pdf)")
+            initial = suggested_output_path(paths, "合并压缩文件.pdf")
+            save_path, _ = QFileDialog.getSaveFileName(self, "保存合并文件", initial, "PDF (*.pdf)")
             if not save_path: return
         else:
-            save_path = QFileDialog.getExistingDirectory(self, "选择保存目录")
+            save_path = QFileDialog.getExistingDirectory(self, "选择保存目录", first_input_directory(paths))
             if not save_path: return
 
         self.pdf_worker = PDFCompressWorker(paths, export_cfg, gs_cfg, save_path, self.gs_path, self.gs_lib_path)
@@ -133,7 +134,7 @@ class CompressorWidget(QWidget):
     def run_img_compress(self):
         paths = self.file_manager_img.get_all_filepaths()
         if not paths: return QMessageBox.warning(self, "提示", "请先添加图片文件。")
-        save_dir = QFileDialog.getExistingDirectory(self, "选择保存目录")
+        save_dir = QFileDialog.getExistingDirectory(self, "选择保存目录", first_input_directory(paths))
         if not save_dir: return
 
         target_val = int(self.entry_val.text())

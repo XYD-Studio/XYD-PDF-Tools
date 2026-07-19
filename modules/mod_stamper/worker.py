@@ -7,6 +7,7 @@ import tempfile
 import uuid
 import threading
 import concurrent.futures
+from datetime import datetime, timezone
 import fitz
 from PIL import Image
 from core.pdf_engine import (BaseFakeProgressWorker, run_ghostscript, merge_pdf_with_smart_toc,
@@ -16,13 +17,49 @@ from core.utils import MM_TO_PTS
 try:
     from pyhanko.sign import signers
     from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
-    from pyhanko.sign.fields import SigFieldSpec, append_signature_field
+    from pyhanko.sign.fields import MDPPerm, SigFieldSpec, append_signature_field
     from cryptography.hazmat.primitives.serialization import pkcs12
     from cryptography.hazmat.primitives import serialization
 
     PYHANKO_AVAILABLE = True
 except ImportError:
     PYHANKO_AVAILABLE = False
+
+
+def validate_pfx_certificate(pfx_path, password):
+    if not PYHANKO_AVAILABLE:
+        raise RuntimeError("防篡改组件未安装，请重新安装完整版软件")
+    if not pfx_path or not os.path.isfile(pfx_path):
+        raise ValueError("PFX/P12 证书文件不存在")
+    try:
+        with open(pfx_path, "rb") as pfx_file:
+            private_key, cert, chain = pkcs12.load_key_and_certificates(
+                pfx_file.read(), (password or "").encode("utf-8")
+            )
+    except Exception as exc:
+        raise ValueError(f"证书密码错误或文件无效: {exc}") from exc
+    if private_key is None or cert is None:
+        raise ValueError("证书中缺少私钥或签名证书")
+
+    private_public = private_key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    cert_public = cert.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    if private_public != cert_public:
+        raise ValueError("证书私钥与签名证书不匹配")
+
+    now = datetime.now(timezone.utc)
+    valid_from = cert.not_valid_before_utc if hasattr(cert, "not_valid_before_utc") else cert.not_valid_before.replace(tzinfo=timezone.utc)
+    valid_until = cert.not_valid_after_utc if hasattr(cert, "not_valid_after_utc") else cert.not_valid_after.replace(tzinfo=timezone.utc)
+    if now < valid_from:
+        raise ValueError(f"证书尚未生效，生效时间: {valid_from.astimezone():%Y-%m-%d %H:%M}")
+    if now > valid_until:
+        raise ValueError(f"证书已过期，失效时间: {valid_until.astimezone():%Y-%m-%d %H:%M}")
+    return private_key, cert, chain
 
 
 class StamperWorker(BaseFakeProgressWorker):
@@ -66,24 +103,36 @@ class StamperWorker(BaseFakeProgressWorker):
         with self.cache_lock:
             if cache_key in self._image_cache: return self._image_cache[cache_key]
 
-        target_px_w = int((w_mm / 25.4) * self.stamp_dpi)
-        target_px_h = int((h_mm / 25.4) * self.stamp_dpi)
+        target_px_w = max(1, int(round((w_mm / 25.4) * self.stamp_dpi)))
+        target_px_h = max(1, int(round((h_mm / 25.4) * self.stamp_dpi)))
 
         with Image.open(stamp_path) as img:
-            img = img.convert("RGBA")
+            has_alpha = img.mode in ("RGBA", "LA") or "transparency" in img.info
+            img = img.convert("RGBA" if has_alpha else "RGB")
+            target_px_w = min(target_px_w, img.width)
+            target_px_h = min(target_px_h, img.height)
             resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
-            img = img.resize((target_px_w, target_px_h), resample=resample_filter)
+            if img.size != (target_px_w, target_px_h):
+                img = img.resize((target_px_w, target_px_h), resample=resample_filter)
             if effective_angle != 0:
                 img = img.rotate(-effective_angle, expand=True, resample=resample_filter)
             stream = io.BytesIO()
-            img.save(stream, format="PNG", optimize=True)
+            color_probe = img.convert("RGB")
+            low_color = color_probe.getcolors(maxcolors=257) is not None
+            if has_alpha or low_color:
+                if low_color:
+                    quantize_method = getattr(Image, 'Quantize', Image).FASTOCTREE
+                    img = img.quantize(colors=256, method=quantize_method)
+                img.save(stream, format="PNG", optimize=True, compress_level=9)
+            else:
+                img.convert("RGB").save(stream, format="JPEG", quality=82, optimize=True, progressive=True)
             img_bytes = stream.getvalue()
 
         with self.cache_lock:
             self._image_cache[cache_key] = img_bytes
         return img_bytes
 
-    def _apply_all_stamps_to_page(self, page, global_page_num):
+    def _apply_all_stamps_to_page(self, page, global_page_num, local_page_num, image_xrefs, pdf_sources):
         stamps_list = self.page_positions.get(global_page_num, [])
         page_rot = page.rotation
         pki_info = None
@@ -96,8 +145,6 @@ class StamperWorker(BaseFakeProgressWorker):
 
             visual_angle = stamp.get('angle', 0) % 360
             phys_angle = (visual_angle - page_rot) % 360
-            img_bytes = self._get_processed_stamp_bytes(stamp['path'], w_mm, h_mm, phys_angle)
-
             cx = pdf_x + w_pts / 2
             cy = pdf_y + h_pts / 2
             phys_center = fitz.Point(cx, cy) * page.derotation_matrix
@@ -109,10 +156,34 @@ class StamperWorker(BaseFakeProgressWorker):
             a_rect = fitz.Rect(phys_center.x - new_w_pts / 2, phys_center.y - new_h_pts / 2,
                                phys_center.x + new_w_pts / 2, phys_center.y + new_h_pts / 2)
 
-            try:
-                page.insert_image(a_rect, stream=img_bytes, keep_proportion=False)
-            except TypeError:
-                page.insert_image(a_rect, stream=img_bytes)
+            asset_type = stamp.get('asset_type', 'image')
+            if asset_type == 'pdf' or stamp['path'].lower().endswith('.pdf'):
+                source_doc = pdf_sources.get(stamp['path'])
+                if source_doc is None:
+                    source_doc = fitz.open(stamp['path'])
+                    pdf_sources[stamp['path']] = source_doc
+                source_page = max(0, min(int(stamp.get('pdf_page', 0)), len(source_doc) - 1))
+                page.show_pdf_page(
+                    a_rect,
+                    source_doc,
+                    pno=source_page,
+                    keep_proportion=False,
+                    rotate=phys_angle,
+                    overlay=True,
+                )
+            else:
+                cache_key = (stamp['path'], w_mm, h_mm, phys_angle)
+                existing_xref = image_xrefs.get(cache_key, 0)
+                if existing_xref:
+                    page.insert_image(a_rect, xref=existing_xref, keep_proportion=False)
+                else:
+                    img_bytes = self._get_processed_stamp_bytes(stamp['path'], w_mm, h_mm, phys_angle)
+                    try:
+                        image_xrefs[cache_key] = page.insert_image(
+                            a_rect, stream=img_bytes, keep_proportion=False
+                        )
+                    except TypeError:
+                        image_xrefs[cache_key] = page.insert_image(a_rect, stream=img_bytes)
 
             is_target = False
             if self.pki_target_id == "first" and pki_info is None:
@@ -121,18 +192,18 @@ class StamperWorker(BaseFakeProgressWorker):
                 is_target = True
 
             if self.use_pki and is_target:
-                pki_info = {'page_idx': global_page_num, 'rect': a_rect, 'page_height': page.rect.height}
+                pki_info = {
+                    'page_idx': local_page_num,
+                    'global_page_idx': global_page_num,
+                    'rect': a_rect,
+                    'page_height': page.rect.height,
+                }
 
         return pki_info
 
     def _apply_pki_signature(self, input_pdf, output_pdf, pki_target_info):
         if not PYHANKO_AVAILABLE: shutil.copy2(input_pdf, output_pdf); return
-        try:
-            with open(self.pfx_path, "rb") as f:
-                pfx_bytes = f.read()
-            private_key, cert, _ = pkcs12.load_key_and_certificates(pfx_bytes, self.pfx_pwd.encode('utf-8'))
-        except Exception as e:
-            raise ValueError(f"证书提取失败: {e}")
+        private_key, cert, _ = validate_pfx_certificate(self.pfx_path, self.pfx_pwd)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             key_path = os.path.join(tmpdir, "tmp_key.pem")
@@ -154,8 +225,13 @@ class StamperWorker(BaseFakeProgressWorker):
                        target['page_height'] - target['rect'].y0)
                 sig_field = SigFieldSpec('DocumentSecurityLock', on_page=target['page_idx'], box=box)
                 append_signature_field(w, sig_field)
-            meta = signers.PdfSignatureMetadata(field_name='DocumentSecurityLock', location="System",
-                                                reason="文档防篡改")
+            meta = signers.PdfSignatureMetadata(
+                field_name='DocumentSecurityLock',
+                location="System",
+                reason="文档防篡改",
+                certify=True,
+                docmdp_permissions=MDPPerm.NO_CHANGES,
+            )
             try:
                 from pyhanko.stamp import TextStampStyle
                 style = TextStampStyle(stamp_text=' ', border_width=0)
@@ -189,14 +265,22 @@ class StamperWorker(BaseFakeProgressWorker):
 
             doc = fitz.open(working_pdf)
             pki_infos = []
-            for i in range(len(doc)):
-                info = self._apply_all_stamps_to_page(doc[i], global_page_start + i)
-                if info: pki_infos.append(info)
+            image_xrefs = {}
+            pdf_sources = {}
+            try:
+                for i in range(len(doc)):
+                    info = self._apply_all_stamps_to_page(
+                        doc[i], global_page_start + i, i, image_xrefs, pdf_sources
+                    )
+                    if info: pki_infos.append(info)
 
-            tmp_stamped = os.path.join(tempfile.gettempdir(), f"stamped_{uuid.uuid4().hex}.pdf")
-            toc = doc.get_toc(simple=False)
-            doc.save(tmp_stamped)
-            doc.close()
+                tmp_stamped = os.path.join(tempfile.gettempdir(), f"stamped_{uuid.uuid4().hex}.pdf")
+                toc = doc.get_toc(simple=False)
+                doc.save(tmp_stamped, garbage=4, deflate=True, clean=True)
+            finally:
+                doc.close()
+                for source_doc in pdf_sources.values():
+                    source_doc.close()
             return tmp_stamped, pki_infos, toc
 
         finally:
@@ -271,15 +355,19 @@ class StamperWorker(BaseFakeProgressWorker):
                     self.total_tasks = len(file_infos)
                     futures = [executor.submit(self._task_prep_and_stamp, fi['path'], fi['start']) for fi in file_infos]
 
-                    stamped_docs = []
                     for f in concurrent.futures.as_completed(futures):
-                        stamped_docs.append(f.result())
+                        f.result()
                         self._update_progress()
+                    stamped_docs = [f.result() for f in futures]
 
                     self.status.emit("🔄 正在顺序拼接主文件...")
                     export_doc = fitz.Document()
                     merged_toc = []
-                    for (tmp_stamped, _, _), fi in zip(stamped_docs, file_infos):
+                    merged_pki_info = None
+                    for (tmp_stamped, pki_infos, _), fi in zip(stamped_docs, file_infos):
+                        if merged_pki_info is None and pki_infos:
+                            merged_pki_info = dict(pki_infos[0])
+                            merged_pki_info['page_idx'] += fi['start']
                         doc = fitz.open(tmp_stamped)
                         merge_pdf_with_smart_toc(doc, fi['basename'], export_doc, merged_toc, self.prefer_filename)
                         doc.close()
@@ -294,7 +382,7 @@ class StamperWorker(BaseFakeProgressWorker):
                     self.trigger_fake_progress()
                     final_path = get_unique_filepath(os.path.dirname(self.output_path),
                                                      os.path.basename(self.output_path))
-                    self._task_finalize_only(tmp_merged, final_path, merged_toc, None)
+                    self._task_finalize_only(tmp_merged, final_path, merged_toc, merged_pki_info)
                     self.stop_fake_progress()
 
                 # === 批量独立 / 原位覆盖 ===
@@ -331,7 +419,7 @@ class StamperWorker(BaseFakeProgressWorker):
                                                                                                            i)
                             final_name = f"{self.prefix}{fi['basename']}_第{i + 1}页{self.suffix}.pdf"
                             final_path = get_unique_filepath(self.output_path, final_name)
-                            page_pki = next((p for p in pki_infos if p['page_idx'] == fi['start'] + i), None)
+                            page_pki = next((p for p in pki_infos if p['global_page_idx'] == fi['start'] + i), None)
                             if page_pki: page_pki['page_idx'] = 0
 
                             finalize_tasks.append((tmp_visual, final_path, single_toc, page_pki))

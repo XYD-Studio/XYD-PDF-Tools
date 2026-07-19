@@ -5,19 +5,134 @@ core/pdf_engine.py
 绝对保证原有逻辑 0 变动
 """
 import os
+import re
 import subprocess
 import fitz
 from PyQt5.QtCore import QThread, pyqtSignal
 
 
 # ================= 核心 PDF 与 GS 函数 =================
+def inspect_pdf_color_resources(pdf_path):
+    """Return color-resource markers used to guard spot colors during GS conversion."""
+    markers = {"separation": False, "devicen": False, "icc": False, "spot_names": set()}
+    doc = fitz.open(pdf_path)
+    try:
+        objects = []
+        for xref in range(1, doc.xref_length()):
+            try:
+                objects.append(doc.xref_object(xref, compressed=False))
+            except Exception:
+                continue
+        source = "\n".join(objects)
+    finally:
+        doc.close()
+
+    markers["separation"] = "/Separation" in source
+    markers["devicen"] = "/DeviceN" in source
+    markers["icc"] = "/ICCBased" in source
+    for name in re.findall(r"/Separation\s*/([^\s<>\[\]()]+)", source):
+        if name not in {"None", "All"}:
+            markers["spot_names"].add(name)
+    for colorants in re.findall(r"/DeviceN\s*\[(.*?)\]", source, flags=re.DOTALL):
+        for name in re.findall(r"/([^\s<>\[\]()]+)", colorants):
+            if name not in {"None", "All", "Black", "Cyan", "Magenta", "Yellow"}:
+                markers["spot_names"].add(name)
+    return markers
+
+
+def _validate_ghostscript_output(input_pdf, output_pdf):
+    if not os.path.isfile(output_pdf) or os.path.getsize(output_pdf) < 8:
+        raise RuntimeError("Ghostscript did not create a valid output file")
+    try:
+        output_doc = fitz.open(output_pdf)
+        page_count = len(output_doc)
+        output_doc.close()
+    except Exception as exc:
+        raise RuntimeError(f"Ghostscript output cannot be opened: {exc}") from exc
+    if page_count <= 0:
+        raise RuntimeError("Ghostscript output contains no pages")
+    input_doc = fitz.open(input_pdf)
+    input_page_count = len(input_doc)
+    input_doc.close()
+    if page_count != input_page_count:
+        raise RuntimeError(
+            f"Ghostscript page-count mismatch: input {input_page_count}, output {page_count}"
+        )
+
+    before = inspect_pdf_color_resources(input_pdf)
+    if not (before["separation"] or before["devicen"]):
+        return
+    after = inspect_pdf_color_resources(output_pdf)
+    missing_types = []
+    if before["separation"] and not after["separation"]:
+        missing_types.append("Separation")
+    if before["devicen"] and not after["devicen"]:
+        missing_types.append("DeviceN")
+    missing_names = sorted(before["spot_names"] - after["spot_names"])
+    if before["icc"] and not after["icc"]:
+        missing_types.append("ICCBased")
+    if missing_types or missing_names:
+        details = []
+        if missing_types:
+            details.append("resources: " + ", ".join(missing_types))
+        if missing_names:
+            details.append("spot names: " + ", ".join(missing_names))
+        raise RuntimeError("Spot-color safety check failed; missing " + "; ".join(details))
+
+
 def run_ghostscript(gs_path, gs_lib_path, input_pdf, output_pdf, quality="/ebook"):
-    """纯净阻塞调用引擎，绝不跨线程传递信号"""
+    """Run Ghostscript with Unicode-safe paths and actionable diagnostics."""
+    if not gs_path or not os.path.exists(gs_path):
+        raise FileNotFoundError(f"Ghostscript executable not found: {gs_path}")
+    input_pdf = os.path.abspath(input_pdf)
+    output_pdf = os.path.abspath(output_pdf)
+    os.makedirs(os.path.dirname(output_pdf), exist_ok=True)
+    if os.path.exists(output_pdf):
+        os.remove(output_pdf)
+
     cmd = [gs_path, "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4", f"-dPDFSETTINGS={quality}",
            "-dNOPAUSE", "-dQUIET", "-dBATCH"]
-    if gs_lib_path: cmd.insert(1, f"-I{gs_lib_path}")
+    if quality == "/printer":
+        cmd.extend([
+            "-sColorConversionStrategy=LeaveColorUnchanged",
+            "-dPreserveSeparation=true",
+            "-dConvertCMYKImagesToRGB=false",
+        ])
+    if gs_lib_path:
+        cmd.append(f"-I{os.path.abspath(gs_lib_path)}")
     cmd.extend([f"-sOutputFile={output_pdf}", input_pdf])
-    subprocess.run(cmd, creationflags=subprocess.CREATE_NO_WINDOW, check=True)
+
+    env = os.environ.copy()
+    if gs_lib_path:
+        old_gs_lib = env.get("GS_LIB", "")
+        env["GS_LIB"] = os.path.abspath(gs_lib_path) + (os.pathsep + old_gs_lib if old_gs_lib else "")
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    result = subprocess.run(
+        cmd,
+        cwd=os.path.dirname(os.path.abspath(gs_path)),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        creationflags=creationflags,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "No diagnostic output").strip()
+        if len(detail) > 1800:
+            detail = detail[-1800:]
+        raise RuntimeError(
+            f"Ghostscript failed for '{os.path.basename(input_pdf)}' "
+            f"(exit code {result.returncode}):\n{detail}"
+        )
+    try:
+        _validate_ghostscript_output(input_pdf, output_pdf)
+    except Exception:
+        if os.path.exists(output_pdf):
+            os.remove(output_pdf)
+        raise
+    return output_pdf
 
 
 def reinject_toc_after_gs(pdf_path, target_toc):

@@ -11,12 +11,12 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPixmap
 import fitz
 
-from core.pdf_viewer import PDFGraphicsView
+from core.pdf_viewer import PDFGraphicsView, prepare_stamp_asset
 from core.ui_components import FileListManagerWidget, ExportSettingsPanel, GSSettingsPanel
 from core.utils import (detect_smart_segments, UniversalSegmentDialog,
                         find_ghostscript, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_RED, BTN_GRAY, BTN_ORANGE)
 from core.pdf_engine import merge_pdf_with_smart_toc, run_ghostscript, BaseFakeProgressWorker
-from .worker import StamperWorker
+from .worker import StamperWorker, validate_pfx_certificate
 
 try:
     import pyhanko
@@ -354,6 +354,9 @@ class StamperWidget(QWidget):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             self.global_stamps = data.get("global_stamps", [])
+            for stamp in self.global_stamps:
+                stamp.setdefault("asset_type", "image")
+                stamp.setdefault("pdf_page", 0)
             self.refresh_stamp_table()
             self.page_stamp_positions.clear()
             if self.pdf_doc:
@@ -367,12 +370,15 @@ class StamperWidget(QWidget):
             pass
 
     def add_stamp_item(self):
-        file, _ = QFileDialog.getOpenFileName(self, "选择图章", "", "Image Files (*.png *.jpg *.jpeg)")
+        file, _ = QFileDialog.getOpenFileName(self, "选择图章", "", "图章素材 (*.png *.jpg *.jpeg *.bmp *.pdf)")
         if not file: return
-        pixmap = QPixmap(file)
-        orig_w = max(1, pixmap.width())
-        orig_h = max(1, pixmap.height())
-        aspect_ratio = orig_w / orig_h
+        try:
+            asset = prepare_stamp_asset(self, file)
+        except Exception as exc:
+            return QMessageBox.warning(self, "素材不可用", str(exc))
+        if not asset:
+            return
+        aspect_ratio = asset['aspect_ratio']
         dialog = QDialog(self)
         dialog.setWindowTitle("属性")
         layout = QFormLayout(dialog)
@@ -409,7 +415,8 @@ class StamperWidget(QWidget):
         if dialog.exec_() == QDialog.Accepted:
             self.global_stamps.append(
                 {'id': str(uuid.uuid4()), 'name': name_input.text(), 'path': file, 'w': float(w_input.text()),
-                 'h': float(h_input.text()), 'angle': 0})
+                 'h': float(h_input.text()), 'angle': 0, 'asset_type': asset['asset_type'],
+                 'pdf_page': asset['pdf_page']})
             self.refresh_stamp_table();
             self._warn_reset_segments()
 
@@ -501,6 +508,13 @@ class StamperWidget(QWidget):
 
         export_cfg = self.export_panel.get_config()
         gs_cfg = self.gs_panel.get_config()
+        if (gs_cfg['use_gs'] or self.chk_pre_gs.isChecked()) and not self.gs_path:
+            return QMessageBox.critical(self, "Ghostscript 不可用", "未找到 Ghostscript，无法执行所选压缩操作。")
+        if self.chk_pki.isChecked():
+            try:
+                validate_pfx_certificate(self.pfx_path, self.entry_pwd.text())
+            except Exception as exc:
+                return QMessageBox.critical(self, "证书校验失败", str(exc))
 
         if export_cfg['mode'] == 'merged':
             path, _ = QFileDialog.getSaveFileName(self, "保存", "合并加盖图纸.pdf", "PDF (*.pdf)")

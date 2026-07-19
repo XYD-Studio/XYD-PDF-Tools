@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt, QRectF, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QWheelEvent
 from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene
 import fitz
+from PIL import Image
 
 from core.ui_components import FileListManagerWidget
 from core.utils import detect_smart_segments, UniversalSegmentDialog, BTN_BLUE, BTN_GREEN, BTN_PURPLE, BTN_GRAY, BTN_RED
@@ -283,6 +284,9 @@ class CropperWidget(QWidget):
         filepaths = self.file_manager.get_all_filepaths()
         toc_list = []
         self.page_to_filename.clear()
+        self.segments.clear()
+        self.page_configs.clear()
+        self.page_render_dpi = {}
         global_page_idx = 0
 
         for path in filepaths:
@@ -293,15 +297,27 @@ class CropperWidget(QWidget):
                 merge_pdf_with_smart_toc(doc, os.path.basename(path), self.pdf_doc, toc_list, prefer_filename_for_single=True)
                 for _ in range(len(doc)):
                     self.page_to_filename[global_page_idx] = base_name
+                    self.page_render_dpi[global_page_idx] = 300.0
                     global_page_idx += 1
                 doc.close()
             else:
-                img = fitz.open(path)
-                pdfbytes = img.convert_to_pdf()
-                img.close()
-                imgPDF = fitz.open("pdf", pdfbytes)
+                with Image.open(path) as source_image:
+                    dpi_info = source_image.info.get('dpi', (300.0, 300.0))
+                    try:
+                        dpi_x = float(dpi_info[0])
+                        dpi_y = float(dpi_info[1] if len(dpi_info) > 1 else dpi_info[0])
+                    except (TypeError, ValueError, IndexError):
+                        dpi_x = dpi_y = 300.0
+                    if not (20.0 <= dpi_x <= 1200.0): dpi_x = 300.0
+                    if not (20.0 <= dpi_y <= 1200.0): dpi_y = 300.0
+                    page_width = source_image.width * 72.0 / dpi_x
+                    page_height = source_image.height * 72.0 / dpi_y
+                imgPDF = fitz.Document()
+                image_page = imgPDF.new_page(width=page_width, height=page_height)
+                image_page.insert_image(image_page.rect, filename=path, keep_proportion=False)
                 merge_pdf_with_smart_toc(imgPDF, os.path.basename(path), self.pdf_doc, toc_list, prefer_filename_for_single=True)
                 self.page_to_filename[global_page_idx] = base_name
+                self.page_render_dpi[global_page_idx] = min(300.0, dpi_x, dpi_y)
                 global_page_idx += 1
                 imgPDF.close()
 
@@ -349,7 +365,8 @@ class CropperWidget(QWidget):
             path = QFileDialog.getExistingDirectory(self, "选择保存目录")
             if not path: return
 
-        self.worker = CropWorker(self.pdf_doc, self.page_configs, mode, path, self.page_to_filename)
+        self.worker = CropWorker(self.pdf_doc, self.page_configs, mode, path, self.page_to_filename,
+                                 self.page_render_dpi)
         self.worker.progress.connect(lambda v, txt: self.progress_bar.setValue(v))
         self.worker.finished.connect(lambda msg: QMessageBox.information(self, "大功告成", msg))
         self.worker.error.connect(lambda e: QMessageBox.critical(self, "严重错误", e))

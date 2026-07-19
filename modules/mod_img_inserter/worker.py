@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import math
 import shutil
 import tempfile
 import uuid
@@ -40,23 +41,52 @@ class ImageInserterWorker(BaseFakeProgressWorker):
     def _task_stamp_only(self, pdf_path, img_path, global_page_start, apply_all):
         """线程独立任务：插图"""
         doc = fitz.open(pdf_path)
-        for local_idx in range(len(doc)):
-            global_page_num = global_page_start + local_idx
-            images_list = self.page_configs.get(global_page_num, [])
-            page = doc[local_idx]
-            for img_info in images_list:
-                img_p = img_info.get('path')
-                if not img_p or not os.path.exists(img_p): continue
-                rect = fitz.Rect(img_info['pdf_x'], img_info['pdf_y'],
-                                 img_info['pdf_x'] + img_info['w'] * MM_TO_PTS,
-                                 img_info['pdf_y'] + img_info['h'] * MM_TO_PTS)
-                try:
-                    page.insert_image(rect, filename=img_p, keep_proportion=False)
-                except Exception:
-                    pass
-        tmp_stamped = os.path.join(tempfile.gettempdir(), f"insert_{uuid.uuid4().hex}.pdf")
-        doc.save(tmp_stamped)
-        doc.close()
+        source_docs = {}
+        try:
+            for local_idx in range(len(doc)):
+                global_page_num = global_page_start + local_idx
+                images_list = self.page_configs.get(global_page_num, [])
+                page = doc[local_idx]
+                for img_info in images_list:
+                    img_p = img_info.get('path')
+                    if not img_p or not os.path.exists(img_p):
+                        continue
+                    source = source_docs.get(img_p)
+                    if source is None:
+                        if img_info.get('asset_type', 'image') == 'pdf' or img_p.lower().endswith('.pdf'):
+                            source = fitz.open(img_p)
+                        else:
+                            image_doc = fitz.open(img_p)
+                            source = fitz.open('pdf', image_doc.convert_to_pdf())
+                            image_doc.close()
+                        source_docs[img_p] = source
+
+                    w_pts = img_info['w'] * MM_TO_PTS
+                    h_pts = img_info['h'] * MM_TO_PTS
+                    visual_angle = float(img_info.get('angle', 0)) % 360
+                    phys_angle = (visual_angle - page.rotation) % 360
+                    center = fitz.Point(
+                        img_info['pdf_x'] + w_pts / 2,
+                        img_info['pdf_y'] + h_pts / 2,
+                    ) * page.derotation_matrix
+                    radians = math.radians(phys_angle)
+                    rotated_w = abs(w_pts * math.cos(radians)) + abs(h_pts * math.sin(radians))
+                    rotated_h = abs(w_pts * math.sin(radians)) + abs(h_pts * math.cos(radians))
+                    rect = fitz.Rect(
+                        center.x - rotated_w / 2,
+                        center.y - rotated_h / 2,
+                        center.x + rotated_w / 2,
+                        center.y + rotated_h / 2,
+                    )
+                    source_page = max(0, min(int(img_info.get('pdf_page', 0)), len(source) - 1))
+                    page.show_pdf_page(rect, source, pno=source_page, keep_proportion=False,
+                                       rotate=phys_angle, overlay=True)
+            tmp_stamped = os.path.join(tempfile.gettempdir(), f"insert_{uuid.uuid4().hex}.pdf")
+            doc.save(tmp_stamped, garbage=4, deflate=True, clean=True)
+        finally:
+            doc.close()
+            for source in source_docs.values():
+                source.close()
         return tmp_stamped
 
     def _task_finalize_only(self, tmp_visual, final_out_path, target_toc):
@@ -117,10 +147,10 @@ class ImageInserterWorker(BaseFakeProgressWorker):
                     futures = [executor.submit(self._task_stamp_only, fi['pdf_path'], fi['img_path'], fi['start'], True)
                                for fi in file_infos]
 
-                    stamped_docs = []
                     for f in concurrent.futures.as_completed(futures):
-                        stamped_docs.append(f.result())
+                        f.result()
                         self._update_progress()
+                    stamped_docs = [f.result() for f in futures]
 
                     self.status.emit("🔄 正在顺序拼接长图纸...")
                     export_doc = fitz.Document()
